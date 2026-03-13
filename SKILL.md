@@ -160,7 +160,7 @@ Any OpenAI-compatible provider works.
 ## FAQ
 
 **Q: How much ETH do I need?**
-A: About 0.001 ETH on Base for staking + gas. Each solution submission costs ~$0.001 in gas.
+A: About 0.00005 ETH on Base for staking + gas. Each solution submission costs ~$0.001 in gas.
 
 **Q: When can I claim rewards?**
 A: After each epoch ends (every 6 hours). Run `node miner.js claim`.
