@@ -5,6 +5,14 @@
  * Each epoch = 6 hours. Unlimited submissions per epoch.
  * More solutions = more shares = more $BTCLAW.
  * 
+ * Supported AI providers:
+ *   - OpenAI / GPT (Chat Completions)
+ *   - DeepSeek (Chat Completions)
+ *   - Anthropic / Claude (Messages API)
+ *   - Google Gemini (Chat Completions compatible)
+ *   - OpenAI Responses API
+ *   - Any OpenAI-compatible third-party provider
+ * 
  * Usage:
  *   node miner.js start     — Start mining loop
  *   node miner.js status    — Show mining stats
@@ -48,6 +56,15 @@ const TOPICS = [
     "synthetic biology", "proteomics", "bioinformatics", "digital twin",
     "edge computing", "federated learning", "homomorphic encryption", "zero knowledge proof"
 ];
+
+// ============ AUTO-DETECT API FORMAT ============
+
+function detectAPIFormat() {
+    const url = AI_API_URL.toLowerCase();
+    if (url.includes('anthropic.com') || url.includes('/v1/messages')) return 'anthropic';
+    if (url.includes('/responses')) return 'responses';
+    return 'openai';
+}
 
 // ============ CONTRACT SETUP ============
 
@@ -119,21 +136,25 @@ Double-check word count by counting spaces (${wordCount} words = ${wordCount - 1
 Output ${batchSize} sentences, one per line. No numbers, no bullets, nothing else.`;
 
     try {
-        const isResponsesAPI = AI_API_URL.includes('/responses');
+        const format = detectAPIFormat();
+        let requestBody, headers;
 
-        let requestBody;
-        if (isResponsesAPI) {
+        if (format === 'anthropic') {
+            headers = {
+                'Content-Type': 'application/json',
+                'x-api-key': AI_API_KEY,
+                'anthropic-version': '2023-06-01'
+            };
+            requestBody = { model: AI_MODEL, max_tokens: 2000, messages: [{ role: 'user', content: prompt }] };
+        } else if (format === 'responses') {
+            headers = { 'Content-Type': 'application/json', 'Authorization': `Bearer ${AI_API_KEY}` };
             requestBody = { model: AI_MODEL, input: prompt, stream: false };
         } else {
+            headers = { 'Content-Type': 'application/json', 'Authorization': `Bearer ${AI_API_KEY}` };
             requestBody = { model: AI_MODEL, max_tokens: 2000, stream: false, messages: [{ role: 'user', content: prompt }] };
         }
 
-        const response = await fetch(AI_API_URL, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${AI_API_KEY}` },
-            body: JSON.stringify(requestBody)
-        });
-
+        const response = await fetch(AI_API_URL, { method: 'POST', headers, body: JSON.stringify(requestBody) });
         const rawText = await response.text();
 
         let data;
@@ -145,7 +166,7 @@ Output ${batchSize} sentences, one per line. No numbers, no bullets, nothing els
                 if (line.startsWith('data: ') && line !== 'data: [DONE]') {
                     try {
                         const chunk = JSON.parse(line.slice(6));
-                        const delta = chunk.choices?.[0]?.delta?.content || '';
+                        const delta = chunk.choices?.[0]?.delta?.content || chunk.delta?.text || '';
                         if (delta) contentParts.push(delta);
                     } catch (e3) {}
                 }
@@ -156,7 +177,9 @@ Output ${batchSize} sentences, one per line. No numbers, no bullets, nothing els
         }
 
         let text = '';
-        if (data.choices && data.choices[0]) {
+        if (data.content && Array.isArray(data.content)) {
+            text = data.content.filter(b => b.type === 'text').map(b => b.text).join('\n');
+        } else if (data.choices && data.choices[0]) {
             text = data.choices[0].message?.content || data.choices[0].delta?.content || '';
         } else if (data.output) {
             if (typeof data.output === 'string') {
@@ -172,6 +195,9 @@ Output ${batchSize} sentences, one per line. No numbers, no bullets, nothing els
             }
         } else if (data.output_text) {
             text = data.output_text;
+        } else if (data.error) {
+            console.error(`  ❌ API error: ${data.error.message || JSON.stringify(data.error).slice(0, 150)}`);
+            return [];
         } else { return []; }
 
         return text.split('\n')
@@ -229,10 +255,11 @@ async function miningLoop() {
     isRunning = true;
     sessionStats.startTime = Date.now();
 
+    const format = detectAPIFormat();
     console.log('\n🦞 BTCLAW Miner v1.0');
     console.log(`   Wallet:  ${wallet.address}`);
     console.log(`   Oracle:  ${ORACLE_URL}`);
-    console.log(`   AI:      ${AI_MODEL}\n`);
+    console.log(`   AI:      ${AI_MODEL} (${format} format)\n`);
 
     const stk = await mineContract.stakes(wallet.address);
     const minStake = await mineContract.MIN_STAKE();
@@ -287,7 +314,6 @@ async function miningLoop() {
 
                 if (sentences.length === 0) { await sleep(5000); continue; }
 
-                // Pre-filter
                 const valid = sentences.filter(s => localFilter(s, constraints.keywords, constraints.wordCount) && !submittedSentences.has(s));
 
                 if (valid.length === 0) {
