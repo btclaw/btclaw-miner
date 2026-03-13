@@ -1,0 +1,17 @@
+{
+  "name": "btclaw-miner",
+  "version": "1.0.0",
+  "description": "BTCLAW AI-powered PoW Miner",
+  "main": "miner.js",
+  "scripts": {
+    "start": "node miner.js start",
+    "status": "node miner.js status",
+    "stake": "node miner.js stake",
+    "unstake": "node miner.js unstake",
+    "claim": "node miner.js claim"
+  },
+  "dependencies": {
+    "dotenv": "^16.4.0",
+    "ethers": "^6.13.0"
+  }
+}
