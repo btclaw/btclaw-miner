@@ -42,7 +42,7 @@ Or manually: create a folder, download these 4 files into it, then `npm install`
 - `miner.js`
 - `package.json`
 - `dictionary.json`
-- `.env`
+- `.env.example`
 
 ### Step 2: Configure
 
@@ -172,4 +172,5 @@ A: Your private key stays in your local `.env` file and never leaves your machin
 
 - **Website:** https://btclaw.space
 - **Dashboard:** https://btclaw.space/#dashboard
+- **GitHub:** https://github.com/btclaw/btclaw-miner
 - **Twitter:** https://twitter.com/btclaw
