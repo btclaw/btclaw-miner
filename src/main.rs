@@ -82,6 +82,10 @@ enum Commands {
         /// Indexer API地址 (查询当前铸造序号)
         #[arg(long, default_value = "http://127.0.0.1:3000")]
         indexer_url: String,
+
+        /// 使用regtest网络
+        #[arg(long, default_value = "false")]
+        regtest: bool,
     },
 
     /// 查询铸造状态
@@ -101,8 +105,8 @@ fn main() {
 
     match cli.command {
         Commands::Check { datadir } => cmd_check(datadir),
-        Commands::Mint { datadir, rpc_url, rpc_user, rpc_pass, privkey, fee_rate, indexer_url } => {
-            cmd_mint(datadir, &rpc_url, &rpc_user, &rpc_pass, &privkey, fee_rate, &indexer_url);
+        Commands::Mint { datadir, rpc_url, rpc_user, rpc_pass, privkey, fee_rate, indexer_url, regtest } => {
+            cmd_mint(datadir, &rpc_url, &rpc_user, &rpc_pass, &privkey, fee_rate, &indexer_url, regtest);
         }
         Commands::Status { indexer_url } => cmd_status(&indexer_url),
     }
@@ -146,9 +150,11 @@ fn cmd_mint(
     privkey_wif: &str,
     fee_rate: u64,
     indexer_url: &str,
+    regtest: bool,
 ) {
     let datadir = resolve_datadir(datadir);
     let secp = Secp256k1::new();
+    let network = if regtest { Network::Regtest } else { Network::Bitcoin };
 
     // ── Step 1: 验证全节点 ──
     println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
@@ -176,7 +182,7 @@ fn cmd_mint(
     let pubkey = PublicKey::from_private_key(&secp, &privkey);
     let compressed_pubkey = CompressedPublicKey::from_private_key(&secp, &privkey)
         .expect("❌ 无法生成压缩公钥");
-    let minter_address = Address::p2tr(&secp, internal_key, None, Network::Bitcoin);
+    let minter_address = Address::p2tr(&secp, internal_key, None, network);
 
     println!("  地址: {}", minter_address);
 
@@ -256,7 +262,7 @@ fn cmd_mint(
 
     let commit_address = Address::p2tr_tweaked(
         taproot_spend_info.output_key(),
-        Network::Bitcoin,
+        network,
     );
 
     // 7c. 查找可用UTXO
@@ -317,6 +323,7 @@ fn cmd_mint(
         &minter_address, // 铸造接收地址 (546 sats)
         &opreturn_script,
         reveal_fee,
+        network,
     );
 
     // 签名Reveal交易 (script path spend — 揭示铭文)
@@ -457,6 +464,7 @@ fn build_reveal_tx(
     recipient: &Address,       // 铸造接收者
     opreturn_script: &[u8],    // OP_RETURN脚本
     fee: u64,
+    network: Network,
 ) -> Transaction {
     let input = TxIn {
         previous_output: OutPoint::new(*commit_txid, commit_vout),
@@ -467,7 +475,7 @@ fn build_reveal_tx(
 
     let fee_address = Address::from_str(FEE_ADDRESS)
         .expect("FEE_ADDRESS无效")
-        .require_network(Network::Bitcoin)
+        .require_network(network)
         .expect("FEE_ADDRESS网络不匹配");
 
     // Output 0: 铸造接收 (546 sats dust)
