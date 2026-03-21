@@ -80,44 +80,52 @@ pub fn build_interlock(seq: u32, proof: &TwoRoundProof) -> Result<InterlockResul
     let proof_bytes: [u8; 32] = hex::decode(&proof.combined)
         .map_err(|e| e.to_string())?.try_into().map_err(|_| "len")?;
 
-    let mut opr = OpReturnData {
-        magic: *MAGIC,
-        version: VERSION,
-        seq,
-        witness_hash: [0u8; 32], // 占位
-        proof_hash: proof_bytes,
-    };
+    // 单向确定方案 (不需要迭代):
+    // 1. 先构造witness(opr=""), 算其hash → 写入opreturn.witness_hash
+    // 2. 构造完整opreturn, 算其hash → 写入witness.opr
+    // 验证时: 验证者将witness.opr替换为""再算hash, 与opreturn.witness_hash比对
 
-    let mut wit = WitnessPayload {
+    // Step 1: witness with empty opr
+    let wit_core = WitnessPayload {
         p: "nexus".into(),
         op: "mint".into(),
         seq,
         amt: MINT_AMOUNT,
         fnp: proof.combined.clone(),
-        opr: hex::encode([0u8; 32]), // 占位
+        opr: String::new(), // 空
     };
+    let wit_core_json = serde_json::to_string(&wit_core).map_err(|e| e.to_string())?;
+    let wit_core_hash: [u8; 32] = Sha256::digest(wit_core_json.as_bytes()).into();
 
-    // 迭代求固定点 (通常2次收敛)
-    for _ in 0..10 {
-        let opr_bytes = opr.to_bytes();
-        let opr_hash: [u8; 32] = Sha256::digest(&opr_bytes).into();
-        wit.opr = hex::encode(opr_hash);
+    // Step 2: opreturn with witness_core_hash
+    let opr = OpReturnData {
+        magic: *MAGIC,
+        version: VERSION,
+        seq,
+        witness_hash: wit_core_hash,
+        proof_hash: proof_bytes,
+    };
+    let opr_bytes = opr.to_bytes();
+    let opr_hash: [u8; 32] = Sha256::digest(&opr_bytes).into();
 
-        let wit_json = serde_json::to_string(&wit).map_err(|e| e.to_string())?;
-        let wit_hash: [u8; 32] = Sha256::digest(wit_json.as_bytes()).into();
+    // Step 3: final witness with opr hash
+    let wit_final = WitnessPayload {
+        p: "nexus".into(),
+        op: "mint".into(),
+        seq,
+        amt: MINT_AMOUNT,
+        fnp: proof.combined.clone(),
+        opr: hex::encode(opr_hash),
+    };
+    let wit_final_json = serde_json::to_string(&wit_final).map_err(|e| e.to_string())?;
+    let wit_final_hash: [u8; 32] = Sha256::digest(wit_final_json.as_bytes()).into();
 
-        if opr.witness_hash == wit_hash {
-            return Ok(InterlockResult {
-                witness_json: wit_json,
-                witness_hash: wit_hash,
-                opreturn_bytes: opr_bytes,
-                opreturn_hash: opr_hash,
-            });
-        }
-        opr.witness_hash = wit_hash;
-    }
-
-    Err("互锁未收敛".into())
+    Ok(InterlockResult {
+        witness_json: wit_final_json,
+        witness_hash: wit_final_hash,
+        opreturn_bytes: opr_bytes,
+        opreturn_hash: opr_hash,
+    })
 }
 
 // ═══════════════════════════════════════════
@@ -130,15 +138,26 @@ pub fn verify_interlock(witness_json: &str, opreturn_bytes: &[u8]) -> Result<(),
     let opr = OpReturnData::from_bytes(opreturn_bytes)
         .ok_or("OP_RETURN格式无效")?;
 
-    // 验证 witness → opreturn
+    // 验证 witness.opr → opreturn (正向)
     let opr_hash: [u8; 32] = Sha256::digest(opreturn_bytes).into();
     if wit.opr != hex::encode(opr_hash) {
         return Err("witness→opreturn hash不匹配".into());
     }
 
-    // 验证 opreturn → witness
-    let wit_hash: [u8; 32] = Sha256::digest(witness_json.as_bytes()).into();
-    if opr.witness_hash != wit_hash {
+    // 验证 opreturn.witness_hash → witness_core (反向)
+    // witness_core = witness with opr="" 
+    let wit_core = WitnessPayload {
+        p: wit.p.clone(),
+        op: wit.op.clone(),
+        seq: wit.seq,
+        amt: wit.amt,
+        fnp: wit.fnp.clone(),
+        opr: String::new(), // 还原为空
+    };
+    let wit_core_json = serde_json::to_string(&wit_core)
+        .map_err(|e| format!("序列化失败: {}", e))?;
+    let wit_core_hash: [u8; 32] = Sha256::digest(wit_core_json.as_bytes()).into();
+    if opr.witness_hash != wit_core_hash {
         return Err("opreturn→witness hash不匹配".into());
     }
 
