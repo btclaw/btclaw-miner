@@ -165,7 +165,6 @@ nexus-protocol/
 │   └── ui.rs            # Terminal UI with color
 ├── docs/
 │   ├── PROTOCOL.md      # Complete protocol specification
-│   └── SECURITY_AUDIT.md
 └── Cargo.toml
 ```
 
@@ -214,8 +213,6 @@ Sequence numbers assigned by block confirmation order. First confirmed, first se
 | Proof replay | Used-proof deduplication in Indexer |
 | Interlock tampering | Bidirectional SHA-256 hash verification |
 | Mint ordering | Indexer assigns sequence by tx position in block — FCFS |
-
-Full audit: [`docs/SECURITY_AUDIT.md`](docs/SECURITY_AUDIT.md)
 
 ---
 
@@ -267,8 +264,6 @@ The NEXUS Reactor handles minting. Transfer support will follow as Indexer infra
 
 - **GitHub**: [github.com/btcnexus/nexus-protocol](https://github.com/btcnexus/nexus-protocol)
 - **Protocol Spec**: [`docs/PROTOCOL.md`](docs/PROTOCOL.md)
-- **Security Audit**: [`docs/SECURITY_AUDIT.md`](docs/SECURITY_AUDIT.md)
-
 ---
 
 ## License
