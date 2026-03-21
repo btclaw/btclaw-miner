@@ -3,6 +3,11 @@ name = "nexus-reactor"
 version = "2.0.0"
 edition = "2021"
 description = "NEXUS Protocol - Dual-layer interlocking mint on Bitcoin L1"
+default-run = "nexus-reactor"
+
+[[bin]]
+name = "nexus-reactor"
+path = "src/main.rs"
 
 [dependencies]
 sha2 = "0.10"
@@ -10,3 +15,6 @@ hex = "0.4"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 reqwest = { version = "0.12", features = ["blocking", "json"] }
+bitcoin = { version = "0.32", features = ["rand-std"] }
+clap = { version = "4", features = ["derive"] }
+dirs = "5.0"
