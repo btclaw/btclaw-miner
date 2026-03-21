@@ -14,7 +14,9 @@
 /// - Reveal TX: 花费Commit输出，在witness中揭示铭文 + OP_RETURN
 
 use clap::{Parser, Subcommand};
-use bitcoin::secp256k1::{Secp256k1, SecretKey};
+use bitcoin::secp256k1::Secp256k1;
+use bitcoin::key::TapTweak;
+use bitcoin::script::PushBytesBuf;
 use bitcoin::{
     Address, Network, PrivateKey, PublicKey,
     Transaction, TxIn, TxOut, OutPoint, Txid, Sequence, Witness,
@@ -210,7 +212,7 @@ fn cmd_mint(
 
     let block_hash_bytes: [u8; 32] = hex::decode(&block_hash_hex).unwrap()
         .try_into().unwrap();
-    let pubkey_bytes: [u8; 33] = pubkey.to_bytes();
+    let pubkey_bytes: [u8; 33] = pubkey.to_bytes().try_into().expect("pubkey 33 bytes");
 
     // raw block获取函数 (通过RPC，因为需要指定高度→hash→raw的完整链路)
     let rpc_url_owned = rpc_url.to_string();
@@ -239,7 +241,7 @@ fn cmd_mint(
     let interlock = transaction::build_interlock(next_seq, &two_round_proof)
         .expect("❌ 互锁构造失败");
 
-    println!("  Witness Hash: {}...", &interlock.witness_hash[..16]);
+    println!("  Witness Hash: {}...", &hex::encode(interlock.witness_hash)[..16]);
     println!("  OP_RETURN Hash: {}...", &hex::encode(interlock.opreturn_hash)[..16]);
 
     // ── Step 7: 构造 Commit + Reveal 交易 ──
@@ -305,9 +307,11 @@ fn cmd_mint(
     );
 
     // 签名Commit交易 (key path spend)
+    let minter_script = minter_address.script_pubkey();
     let signed_commit = sign_p2tr_key_path(
         commit_tx,
         selected_utxo.amount,
+        &minter_script,
         &keypair,
         &secp,
     );
@@ -407,7 +411,7 @@ fn build_inscription_tapscript(
         .push_slice([0x01])                             // content-type tag
         .push_slice(b"application/nexus-mint")          // MIME
         .push_opcode(opcodes::all::OP_PUSHBYTES_0)      // body separator
-        .push_slice(payload_json.as_bytes())            // 铭文数据
+        .push_slice(PushBytesBuf::try_from(payload_json.as_bytes().to_vec()).expect("payload too large"))
         .push_opcode(opcodes::all::OP_ENDIF)
         .into_script()
 }
@@ -508,6 +512,7 @@ fn build_reveal_tx(
 fn sign_p2tr_key_path(
     mut tx: Transaction,
     input_value: u64,
+    prevout_script: &ScriptBuf,
     keypair: &bitcoin::secp256k1::Keypair,
     secp: &Secp256k1<bitcoin::secp256k1::All>,
 ) -> Transaction {
@@ -515,7 +520,7 @@ fn sign_p2tr_key_path(
 
     let prevouts = vec![TxOut {
         value: Amount::from_sat(input_value),
-        script_pubkey: ScriptBuf::new(), // 简化: 实际应传入真实的prevout script
+        script_pubkey: prevout_script.clone(),
     }];
 
     let mut sighash_cache = SighashCache::new(&tx);
@@ -525,8 +530,11 @@ fn sign_p2tr_key_path(
         TapSighashType::Default,
     ).expect("sighash计算失败");
 
+    // 关键: P2TR key path必须用tweaked keypair签名
+    let tweaked_keypair = keypair.tap_tweak(secp, None);
+
     let msg = bitcoin::secp256k1::Message::from_digest(sighash.to_byte_array());
-    let sig = secp.sign_schnorr(&msg, keypair);
+    let sig = secp.sign_schnorr(&msg, &tweaked_keypair.to_inner());
 
     let schnorr_sig = bitcoin::taproot::Signature {
         signature: sig,
