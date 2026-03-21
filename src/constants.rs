@@ -25,7 +25,7 @@ pub const MINT_FEE_SATS: u64 = 5_000;
 pub const FEE_ADDRESS: &str = "bc1q_REPLACE_WITH_YOUR_ADDRESS";
 
 #[cfg(feature = "regtest")]
-pub const FEE_ADDRESS: &str = "REGTEST_FEE_ADDR"; // 运行时动态设置
+pub const FEE_ADDRESS: &str = "bcrt1pt69vsuspaadg4kd3k8dv48edvq6e2x5td3m4gxjwc43ymd92ve8q7f67e0"; // 运行时动态设置
 
 /// OP_RETURN 魔术数
 pub const MAGIC: &[u8; 3] = b"NXS";
@@ -66,4 +66,4 @@ pub const BTC_MAINNET_MAGIC: [u8; 4] = [0xF9, 0xBE, 0xB4, 0xD9];
 
 /// Bitcoin regtest magic bytes
 #[cfg(feature = "regtest")]
-pub const BTC_MAINNET_MAGIC: [u8; 4] = [0xFA, 0xBF, 0xB5, 0xDA];
+pub const BTC_MAINNET_MAGIC: [u8; 4] = [0xF4, 0xC1, 0xFF, 0x14];
