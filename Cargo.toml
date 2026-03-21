@@ -9,6 +9,10 @@ default-run = "nexus-reactor"
 name = "nexus-reactor"
 path = "src/main.rs"
 
+[features]
+default = []
+regtest = []
+
 [dependencies]
 sha2 = "0.10"
 hex = "0.4"
