@@ -17,7 +17,7 @@ pub const TOTAL_MINTS: u32 = 42_000;
 pub const MINT_FEE_SATS: u64 = 5_000;
 
 /// 项目方收费地址 (部署前替换)
-pub const FEE_ADDRESS: &str = "bc1q_REPLACE_WITH_YOUR_ADDRESS";
+pub const FEE_ADDRESS: &str = "bc1pufrhrj9q6kzlu03cfwqm7yfgwz05adlg3a3pm85zd9wcpv7has9qv5r8h0";
 
 /// OP_RETURN 魔术数
 pub const MAGIC: &[u8; 3] = b"NXS";
