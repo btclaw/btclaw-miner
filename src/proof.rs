@@ -77,7 +77,12 @@ pub fn verify_full_node(datadir: &str) -> Result<(), String> {
     }
 
     // 验证早期文件存在（pruned节点删旧文件）
-    for i in 0..10 {
+    #[cfg(not(feature = "regtest"))]
+    let check_range = 0..10;
+    #[cfg(feature = "regtest")]
+    let check_range = 0..1; // regtest只检查blk00000.dat
+
+    for i in check_range {
         let path = blocks_dir.join(format!("blk{:05}.dat", i));
         if !path.exists() {
             return Err(format!("缺少 blk{:05}.dat — pruned节点", i));
