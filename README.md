@@ -31,7 +31,6 @@ NEXUS is the first protocol that requires **both layers simultaneously**, with e
 │  ┌───────────────────────────────────────┐          │
 │  │ protocol:    "nexus"                  │          │
 │  │ operation:   "mint"                   │          │
-│  │ sequence:    #1                       │          │
 │  │ amount:      500 NXS                  │          │
 │  │ node_proof:  <full node proof hash>   │          │
 │  │ opr_hash:    SHA256(OP_RETURN data) ──┼──┐       │
@@ -41,7 +40,6 @@ NEXUS is the first protocol that requires **both layers simultaneously**, with e
 │  ┌───────────────────────────────────────┐  │       │
 │  │ magic:       "NXS"                    │  │       │
 │  │ version:     1                        │  │       │
-│  │ mint_seq:    #1                       │  │       │
 │  │ wit_hash:    SHA256(Witness data) ────┼──┘       │
 │  │ proof_hash:  <full node proof hash>   │          │
 │  └───────────────────────────────────────┘          │
@@ -200,7 +198,7 @@ A mint is valid if and only if **all 6 conditions** are met:
 3. Dual-layer interlock hashes match (cross-verified)
 4. Full node proof passes two-round verification
 5. Exactly 5,000 sats sent to the protocol fee address
-6. `mint_seq ≤ 42,000` (supply cap not exceeded)
+6. Total mints ≤ 42,000 (supply cap not exceeded, tracked by Indexer)
 
 Sequence numbers assigned by block confirmation order. First confirmed, first served.
 
@@ -215,7 +213,7 @@ Sequence numbers assigned by block confirmation order. First confirmed, first se
 | Shared Reactor proxy | Proof bound to minter's public key |
 | Proof replay | Used-proof deduplication in Indexer |
 | Interlock tampering | Bidirectional SHA-256 hash verification |
-| Sequence race | FCFS by block confirmation — same as BRC-20/Runes |
+| Mint ordering | Indexer assigns sequence by tx position in block — FCFS |
 
 Full audit: [`docs/SECURITY_AUDIT.md`](docs/SECURITY_AUDIT.md)
 
@@ -229,7 +227,6 @@ Every NEXUS mint is permanently visible on-chain with two layers of data:
 ┌── Witness Layer / Inscription ──
 │ Protocol:    nexus
 │ Operation:   mint
-│ Sequence:    #1
 │ Amount:      500 NXS
 │ Node Proof:  1be38a64af1bc4d2...
 │ OPR Hash:    874b4a6c3fc4331c...
@@ -238,7 +235,6 @@ Every NEXUS mint is permanently visible on-chain with two layers of data:
 ┌── OP_RETURN Layer / Protocol ──
 │ Magic:       NXS
 │ Version:     1
-│ Mint Seq:    #1
 │ Wit Hash:    91c34342219faab3...
 │ Proof Hash:  1be38a64af1bc4d2...
 └─────────────────────────────────
