@@ -90,7 +90,7 @@ impl Indexer {
         get_raw_block: &dyn Fn(u32) -> Result<Vec<u8>, String>,
     ) -> Result<MintRecord, String> {
 
-        // ═══ 规则6: 总量检查 (先检查，快速失败) ═══
+        // ═══ 规则6: 总量检查 ═══
         if self.minted >= MAX_SUPPLY {
             return Err("铸造已结束，总量21,000,000已达上限".into());
         }
@@ -235,7 +235,7 @@ mod tests {
         idx.confirm(MintRecord {
             seq: 1,
             txid: "abc".into(),
-            address: "bc1qxyz".into(),
+            minter_address: "bc1qxyz".into(),
             amount: MINT_AMOUNT,
             block_height: 941523,
             proof_hash: "proof1".into(),
