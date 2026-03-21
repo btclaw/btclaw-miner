@@ -9,10 +9,10 @@ pub const TOKEN_NAME: &str = "NEXUS";
 pub const TOKEN_SYMBOL: &str = "NXS";
 
 /// 总量: 21,000,000 × 10^8 (8位精度)
-pub const MAX_SUPPLY: u64 = 21_000_000_00000000;
+pub const MAX_SUPPLY: u64 = 21_000_000;
 
 /// 每笔固定铸造量: 500 × 10^8
-pub const MINT_AMOUNT: u64 = 500_00000000;
+pub const MINT_AMOUNT: u64 = 500;
 
 /// 总铸造笔数: 21,000,000 / 500 = 42,000
 pub const TOTAL_MINTS: u32 = 42_000;
