@@ -4,11 +4,11 @@
 pub const TOKEN_NAME: &str = "NEXUS";
 pub const TOKEN_SYMBOL: &str = "NXS";
 
-/// 总量: 21,000,000 × 10^8 (8位精度)
-pub const MAX_SUPPLY: u64 = 21_000_000_00000000;
+/// 总量: 21,000,000
+pub const MAX_SUPPLY: u64 = 21_000_000;
 
-/// 每笔固定铸造量: 500 × 10^8
-pub const MINT_AMOUNT: u64 = 500_00000000;
+/// 每笔固定铸造量: 500
+pub const MINT_AMOUNT: u64 = 500;
 
 /// 总铸造笔数: 21,000,000 / 500 = 42,000
 pub const TOTAL_MINTS: u32 = 42_000;
@@ -16,7 +16,7 @@ pub const TOTAL_MINTS: u32 = 42_000;
 /// 铸造费 (satoshis)
 pub const MINT_FEE_SATS: u64 = 5_000;
 
-/// 项目方收费地址 (部署前替换)
+/// 项目方收费地址
 pub const FEE_ADDRESS: &str = "bc1pufrhrj9q6kzlu03cfwqm7yfgwz05adlg3a3pm85zd9wcpv7has9qv5r8h0";
 
 /// OP_RETURN 魔术数
