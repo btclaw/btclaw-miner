@@ -383,12 +383,16 @@ print(wif)
             println!("");
 
             // 验证链上数据
-            println!("  ── 链上验证 ──");
+            println!("");
+            println!("  ── 链上验证 On-Chain Verification ──");
+            println!("");
             let tx_raw = btc_cli_output(&["getrawtransaction", &reveal_txid, "1"], true);
             if let Ok(tx) = serde_json::from_str::<serde_json::Value>(&tx_raw) {
                 let confirms = tx["confirmations"].as_u64().unwrap_or(0);
-                println!("  确认数: {}", confirms);
+                println!("  确认数 Confirmations: {}", confirms);
+                println!("");
 
+                // Outputs
                 if let Some(vouts) = tx["vout"].as_array() {
                     for (i, out) in vouts.iter().enumerate() {
                         let val = out["value"].as_f64().unwrap_or(0.0);
@@ -396,16 +400,65 @@ print(wif)
                         println!("  Output[{}]: {} BTC ({})", i, val, typ);
                     }
                 }
+                println!("");
 
+                // 铭文层解码
                 if let Some(wit) = tx["vin"][0]["txinwitness"].as_array() {
                     if wit.len() >= 2 {
                         let script_hex = wit[1].as_str().unwrap_or("");
-                        if script_hex.contains("6e65787573") { // "nexus" in hex
-                            println!("  铭文: ✅ nexus协议标识已确认");
+                        // 找JSON: 7b22 = {"
+                        if let Some(idx) = script_hex.find("7b22") {
+                            let json_hex = &script_hex[idx..];
+                            let mut depth: i32 = 0;
+                            let mut end = 0;
+                            let bytes_iter: Vec<u8> = (0..json_hex.len()/2)
+                                .filter_map(|i| u8::from_str_radix(&json_hex[i*2..i*2+2], 16).ok())
+                                .collect();
+                            for (i, &b) in bytes_iter.iter().enumerate() {
+                                if b == b'{' { depth += 1; }
+                                if b == b'}' { depth -= 1; if depth == 0 { end = i + 1; break; } }
+                            }
+                            if end > 0 {
+                                let json_bytes: Vec<u8> = bytes_iter[..end].to_vec();
+                                if let Ok(json_str) = String::from_utf8(json_bytes) {
+                                    println!("  ┌── Witness Layer / 铭文层 ──");
+                                    if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&json_str) {
+                                        println!("  │ Protocol:    {}", parsed["p"].as_str().unwrap_or("?"));
+                                        println!("  │ Operation:   {}", parsed["op"].as_str().unwrap_or("?"));
+                                        // seq由Indexer分配，链上数据不含seq
+                                        println!("  │ Amount:      {} NXS", parsed["amt"]);
+                                        println!("  │ Node Proof:  {}", parsed["fnp"].as_str().unwrap_or("?"));
+                                        println!("  │ OPR Hash:    {}", parsed["opr"].as_str().unwrap_or("?"));
+                                    }
+                                    println!("  └─────────────────────────────");
+                                }
+                            }
                         }
                     }
                 }
-                println!("  OP_RETURN: ✅ NXS协议数据已确认");
+                println!("");
+
+                // OP_RETURN层解码
+                if let Some(vouts) = tx["vout"].as_array() {
+                    for out in vouts {
+                        if out["scriptPubKey"]["type"].as_str() == Some("nulldata") {
+                            let hex_data = out["scriptPubKey"]["hex"].as_str().unwrap_or("");
+                            if hex_data.len() > 6 {
+                                let data_start = if &hex_data[2..4] == "4c" { 6 } else { 4 };
+                                if let Ok(data) = hex::decode(&hex_data[data_start..]) {
+                                    if data.len() >= 68 {
+                                        println!("  ┌── OP_RETURN Layer / 协议层 ──");
+                                        println!("  │ Magic:       {}", String::from_utf8_lossy(&data[0..3]));
+                                        println!("  │ Version:     {}", data[3]);
+                                        println!("  │ Wit Hash:    {}", hex::encode(&data[4..36]));
+                                        println!("  │ Proof Hash:  {}", hex::encode(&data[36..68]));
+                                        println!("  └────────────────────────────────");
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
             }
         }
         Err(e) => {
@@ -628,12 +681,12 @@ fn execute_mint(
 
     println!("    地址: {}", minter_address);
 
-    // 查询Indexer获取序号
+    // 查询铸造进度
     let next_seq = query_indexer_seq();
     if next_seq > TOTAL_MINTS {
-        return Err("铸造已结束".into());
+        return Err("铸造已结束，42,000笔全部完成".into());
     }
-    println!("    序号: #{} / {}", next_seq, TOTAL_MINTS);
+    println!("    进度: {} / {} mints remaining", TOTAL_MINTS - next_seq + 1, TOTAL_MINTS);
 
     // 获取最新区块
     let (block_hash_hex, block_height) = get_latest_block(rpc_url, rpc_user, rpc_pass)?;
@@ -661,7 +714,7 @@ fn execute_mint(
     println!("✅ ({}s)", two_round.round2_ts - two_round.round1_ts);
 
     // 构造互锁
-    let interlock = transaction::build_interlock(next_seq, &two_round)
+    let interlock = transaction::build_interlock(&two_round)
         .map_err(|e| format!("互锁构造失败: {}", e))?;
     println!("    互锁: ✅");
 
