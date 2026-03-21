@@ -16,10 +16,9 @@ use crate::proof::TwoRoundProof;
 pub struct WitnessPayload {
     pub p: String,        // "nexus"
     pub op: String,       // "mint"
-    pub seq: u32,         // 铸造序号 (由Reactor从Indexer获取)
-    pub amt: u64,         // 500_00000000
+    pub amt: u64,         // 500
     pub fnp: String,      // combined proof hash
-    pub opr: String,      // SHA256(OP_RETURN bytes) ← 互锁
+    pub opr: String,      // SHA256(OP_RETURN bytes)
 }
 
 /// OP_RETURN二进制结构 (共71字节)
@@ -28,31 +27,28 @@ pub struct WitnessPayload {
 pub struct OpReturnData {
     pub magic: [u8; 3],            // "NXS"
     pub version: u8,               // 0x01
-    pub seq: u32,                  // 铸造序号
-    pub witness_hash: [u8; 32],    // SHA256(witness JSON) ← 互锁
+    pub witness_hash: [u8; 32],    // SHA256(witness JSON)
     pub proof_hash: [u8; 32],      // combined proof
 }
 
 impl OpReturnData {
     pub fn to_bytes(&self) -> Vec<u8> {
-        let mut b = Vec::with_capacity(72);
-        b.extend_from_slice(&self.magic);
-        b.push(self.version);
-        b.extend_from_slice(&self.seq.to_le_bytes());
-        b.extend_from_slice(&self.witness_hash);
-        b.extend_from_slice(&self.proof_hash);
-        b
+        let mut b = Vec::with_capacity(68);
+        b.extend_from_slice(&self.magic);          // 3
+        b.push(self.version);                       // 1
+        b.extend_from_slice(&self.witness_hash);    // 32
+        b.extend_from_slice(&self.proof_hash);      // 32
+        b                                           // total: 68
     }
 
     pub fn from_bytes(d: &[u8]) -> Option<Self> {
-        if d.len() < 72 { return None; }
+        if d.len() < 68 { return None; }
         if &d[0..3] != b"NXS" { return None; }
         Some(Self {
             magic: [d[0], d[1], d[2]],
             version: d[3],
-            seq: u32::from_le_bytes([d[4], d[5], d[6], d[7]]),
-            witness_hash: d[8..40].try_into().ok()?,
-            proof_hash: d[40..72].try_into().ok()?,
+            witness_hash: d[4..36].try_into().ok()?,
+            proof_hash: d[36..68].try_into().ok()?,
         })
     }
 }
@@ -76,7 +72,7 @@ pub struct InterlockResult {
 /// - witness.opr = SHA256(opreturn)
 /// - opreturn.witness_hash = SHA256(witness_json)
 /// 迭代2-3次必然收敛
-pub fn build_interlock(seq: u32, proof: &TwoRoundProof) -> Result<InterlockResult, String> {
+pub fn build_interlock(proof: &TwoRoundProof) -> Result<InterlockResult, String> {
     let proof_bytes: [u8; 32] = hex::decode(&proof.combined)
         .map_err(|e| e.to_string())?.try_into().map_err(|_| "len")?;
 
@@ -89,10 +85,9 @@ pub fn build_interlock(seq: u32, proof: &TwoRoundProof) -> Result<InterlockResul
     let wit_core = WitnessPayload {
         p: "nexus".into(),
         op: "mint".into(),
-        seq,
         amt: MINT_AMOUNT,
         fnp: proof.combined.clone(),
-        opr: String::new(), // 空
+        opr: String::new(),
     };
     let wit_core_json = serde_json::to_string(&wit_core).map_err(|e| e.to_string())?;
     let wit_core_hash: [u8; 32] = Sha256::digest(wit_core_json.as_bytes()).into();
@@ -101,7 +96,6 @@ pub fn build_interlock(seq: u32, proof: &TwoRoundProof) -> Result<InterlockResul
     let opr = OpReturnData {
         magic: *MAGIC,
         version: VERSION,
-        seq,
         witness_hash: wit_core_hash,
         proof_hash: proof_bytes,
     };
@@ -112,7 +106,6 @@ pub fn build_interlock(seq: u32, proof: &TwoRoundProof) -> Result<InterlockResul
     let wit_final = WitnessPayload {
         p: "nexus".into(),
         op: "mint".into(),
-        seq,
         amt: MINT_AMOUNT,
         fnp: proof.combined.clone(),
         opr: hex::encode(opr_hash),
@@ -149,10 +142,9 @@ pub fn verify_interlock(witness_json: &str, opreturn_bytes: &[u8]) -> Result<(),
     let wit_core = WitnessPayload {
         p: wit.p.clone(),
         op: wit.op.clone(),
-        seq: wit.seq,
         amt: wit.amt,
         fnp: wit.fnp.clone(),
-        opr: String::new(), // 还原为空
+        opr: String::new(),
     };
     let wit_core_json = serde_json::to_string(&wit_core)
         .map_err(|e| format!("序列化失败: {}", e))?;
@@ -162,7 +154,6 @@ pub fn verify_interlock(witness_json: &str, opreturn_bytes: &[u8]) -> Result<(),
     }
 
     // 字段一致性
-    if wit.seq != opr.seq { return Err("seq不一致".into()); }
 
     let fnp_bytes = hex::decode(&wit.fnp).map_err(|e| e.to_string())?;
     if fnp_bytes != opr.proof_hash { return Err("proof不一致".into()); }
@@ -234,13 +225,13 @@ mod tests {
 
     #[test]
     fn interlock_builds_and_verifies() {
-        let result = build_interlock(1, &mock_proof()).unwrap();
+        let result = build_interlock(&mock_proof()).unwrap();
         assert!(verify_interlock(&result.witness_json, &result.opreturn_bytes).is_ok());
     }
 
     #[test]
     fn interlock_detects_tamper() {
-        let result = build_interlock(1, &mock_proof()).unwrap();
+        let result = build_interlock(&mock_proof()).unwrap();
         let mut bad = result.opreturn_bytes.clone();
         *bad.last_mut().unwrap() ^= 0xFF;
         assert!(verify_interlock(&result.witness_json, &bad).is_err());
@@ -249,12 +240,11 @@ mod tests {
     #[test]
     fn opreturn_roundtrip() {
         let opr = OpReturnData {
-            magic: *b"NXS", version: 1, seq: 42000,
+            magic: *b"NXS", version: 1,
             witness_hash: [0xAA; 32], proof_hash: [0xBB; 32],
         };
         let bytes = opr.to_bytes();
         let parsed = OpReturnData::from_bytes(&bytes).unwrap();
-        assert_eq!(parsed.seq, 42000);
         assert_eq!(parsed.witness_hash, [0xAA; 32]);
     }
 }
