@@ -4,10 +4,12 @@
 /// 1. 磁盘验证 — 直接读blk*.dat，验证>500GB
 /// 2. 两轮挑战 — 15秒窗口，本地~100ms，API~5-15s
 /// 3. 深层切片 — 需要解析区块体结构
+///
+/// Bitcoin Core 30.x+ 支持: 自动检测 obfuscation key (XOR加密)
 
 use sha2::{Sha256, Digest};
 use serde::{Serialize, Deserialize};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::io::{Read, Seek, SeekFrom};
 use crate::constants::*;
 
@@ -30,17 +32,114 @@ pub struct TwoRoundProof {
 }
 
 // ═══════════════════════════════════════════
+//  Obfuscation Key 检测 (Bitcoin Core 30.x+)
+// ═══════════════════════════════════════════
+
+/// 检测blk文件的XOR obfuscation key
+///
+/// Bitcoin Core 30.x 开始对blk*.dat文件使用8字节循环XOR加密
+/// 旧版本 (< 30.0) 不加密，key全为0
+///
+/// 检测方法: 读blk00000.dat前4字节 XOR 已知mainnet magic = key前4字节
+/// 然后读前8字节 XOR 期望的 magic+size = 完整8字节key
+fn detect_obfuscation_key(blocks_dir: &Path) -> [u8; 8] {
+    let blk0 = blocks_dir.join("blk00000.dat");
+    let mut key = [0u8; 8];
+
+    let mut f = match std::fs::File::open(&blk0) {
+        Ok(f) => f,
+        Err(_) => return key, // 无法读取，假设无加密
+    };
+
+    let mut buf = [0u8; 8];
+    if f.read_exact(&mut buf).is_err() {
+        return key;
+    }
+
+    // 前4字节 XOR mainnet magic
+    let magic = BTC_MAINNET_MAGIC;
+    key[0] = buf[0] ^ magic[0];
+    key[1] = buf[1] ^ magic[1];
+    key[2] = buf[2] ^ magic[2];
+    key[3] = buf[3] ^ magic[3];
+
+    // 如果前4字节key全为0，说明没加密（旧版Bitcoin Core）
+    if key[0] == 0 && key[1] == 0 && key[2] == 0 && key[3] == 0 {
+        return [0u8; 8];
+    }
+
+    // 后4字节: buf[4..8] XOR 后应该是block size (little-endian)
+    // 第一个区块(genesis)的size是285字节 = 0x0000011D
+    // 但更可靠的方式：用前4字节key的模式推导完整8字节
+    // Bitcoin Core 的 obfuscation key 存在 LevelDB 里，我们这里从文件名提取
+    // 简化方式：假设key是周期性的，尝试从debug.log或直接穷举
+
+    // 尝试读LevelDB的obfuscation key
+    let blocks_parent = blocks_dir.parent().unwrap_or(Path::new("/"));
+    if let Some(full_key) = read_obfuscation_from_leveldb(blocks_parent) {
+        return full_key;
+    }
+
+    // 备用：用已知genesis block size推导后4字节
+    // genesis block raw size = 285 bytes = 0x1D010000 in LE
+    let expected_size: [u8; 4] = [0x1D, 0x01, 0x00, 0x00];
+    key[4] = buf[4] ^ expected_size[0];
+    key[5] = buf[5] ^ expected_size[1];
+    key[6] = buf[6] ^ expected_size[2];
+    key[7] = buf[7] ^ expected_size[3];
+
+    key
+}
+
+/// 从Bitcoin Core的LevelDB读取obfuscation key
+fn read_obfuscation_from_leveldb(datadir: &Path) -> Option<[u8; 8]> {
+    // 尝试从debug.log提取
+    let log_path = datadir.join("debug.log");
+    if let Ok(content) = std::fs::read_to_string(&log_path) {
+        // 搜索 "Using obfuscation key for blocksdir *.dat files"
+        for line in content.lines().rev() {
+            if line.contains("obfuscation key for blocksdir") || line.contains("obfuscation key for /") {
+                // 格式: ... obfuscation key ... : 'HEXHEXHEXHEX'
+                if let Some(start) = line.rfind('\'') {
+                    let after = &line[start + 1..];
+                    if let Some(end) = after.find('\'') {
+                        let hex_key = &after[..end];
+                        if hex_key.len() == 16 {
+                            if let Ok(bytes) = hex::decode(hex_key) {
+                                if bytes.len() == 8 {
+                                    let mut key = [0u8; 8];
+                                    key.copy_from_slice(&bytes);
+                                    return Some(key);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
+/// 对数据应用XOR解密（8字节key循环）
+fn xor_decrypt(data: &mut [u8], key: &[u8; 8], offset: u64) {
+    if key == &[0u8; 8] { return; } // 无加密
+    for (i, byte) in data.iter_mut().enumerate() {
+        let key_idx = ((offset as usize + i) % 8) as usize;
+        *byte ^= key[key_idx];
+    }
+}
+
+/// 检查key是否为全零（未加密）
+fn has_obfuscation(key: &[u8; 8]) -> bool {
+    key != &[0u8; 8]
+}
+
+// ═══════════════════════════════════════════
 //  第一道防线: 磁盘验证
 // ═══════════════════════════════════════════
 
 /// 验证本地是完整的BTC Full Archive Node
-///
-/// 检查项:
-/// - blocks目录存在
-/// - blk*.dat文件总大小 > 500GB
-/// - blk文件数量 > 3000
-/// - blk00000.dat ~ blk00009.dat全部存在 (pruned会删)
-/// - blk00000.dat以mainnet magic开头
 pub fn verify_full_node(datadir: &str) -> Result<(), String> {
     let blocks_dir = Path::new(datadir).join("blocks");
 
@@ -76,11 +175,11 @@ pub fn verify_full_node(datadir: &str) -> Result<(), String> {
         ));
     }
 
-    // 验证早期文件存在（pruned节点删旧文件）
+    // 验证早期文件存在
     #[cfg(not(feature = "regtest"))]
     let check_range = 0..10;
     #[cfg(feature = "regtest")]
-    let check_range = 0..1; // regtest只检查blk00000.dat
+    let check_range = 0..1;
 
     for i in check_range {
         let path = blocks_dir.join(format!("blk{:05}.dat", i));
@@ -89,11 +188,20 @@ pub fn verify_full_node(datadir: &str) -> Result<(), String> {
         }
     }
 
-    // 验证blk00000.dat内容
+    // 检测obfuscation key
+    let obf_key = detect_obfuscation_key(&blocks_dir);
+    if has_obfuscation(&obf_key) {
+        eprintln!("  [info] Detected obfuscation key: {}", hex::encode(obf_key));
+    }
+
+    // 验证blk00000.dat magic (带XOR解密)
     let mut f = std::fs::File::open(blocks_dir.join("blk00000.dat"))
         .map_err(|e| e.to_string())?;
     let mut magic = [0u8; 4];
     f.read_exact(&mut magic).map_err(|e| e.to_string())?;
+
+    // XOR解密
+    xor_decrypt(&mut magic, &obf_key, 0);
 
     if magic != BTC_MAINNET_MAGIC {
         return Err(format!(
@@ -105,21 +213,17 @@ pub fn verify_full_node(datadir: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// 从blk文件直接读取指定高度的区块原始字节
-///
-/// 需要Bitcoin Core的block index (LevelDB)来定位区块在哪个blk文件的哪个偏移
-/// 这里通过RPC只获取blockhash→文件位置映射，实际数据从磁盘读取
-///
-/// 为什么安全: RPC只返回一个hash字符串(64字节)，
-/// 实际的MB级区块数据必须从本地磁盘读取
+/// 从blk文件直接读取指定位置的区块原始字节（支持obfuscation）
 pub fn read_raw_block_from_disk(
     datadir: &str,
     file_number: u32,
     file_offset: u64,
 ) -> Result<Vec<u8>, String> {
-    let path = Path::new(datadir)
-        .join("blocks")
-        .join(format!("blk{:05}.dat", file_number));
+    let blocks_dir = Path::new(datadir).join("blocks");
+    let path = blocks_dir.join(format!("blk{:05}.dat", file_number));
+
+    // 检测key
+    let obf_key = detect_obfuscation_key(&blocks_dir);
 
     let mut f = std::fs::File::open(&path)
         .map_err(|e| format!("打开 {:?} 失败: {}", path, e))?;
@@ -131,6 +235,9 @@ pub fn read_raw_block_from_disk(
     let mut header = [0u8; 8];
     f.read_exact(&mut header).map_err(|e| format!("读header失败: {}", e))?;
 
+    // XOR解密
+    xor_decrypt(&mut header, &obf_key, file_offset);
+
     if header[0..4] != BTC_MAINNET_MAGIC {
         return Err("区块magic不匹配".into());
     }
@@ -140,13 +247,13 @@ pub fn read_raw_block_from_disk(
     let mut block = vec![0u8; block_size as usize];
     f.read_exact(&mut block).map_err(|e| format!("读区块数据失败: {}", e))?;
 
+    // XOR解密区块数据
+    xor_decrypt(&mut block, &obf_key, file_offset + 8);
+
     Ok(block)
 }
 
-/// 备用方案: 通过RPC获取raw block (用于没有LevelDB直读能力时)
-/// 
-/// getblock <hash> 0 返回完整原始区块hex
-/// 虽然经过RPC，但返回的是MB级数据，伪造成本极高
+/// 通过RPC获取raw block (主要使用方式)
 pub fn read_raw_block_via_rpc(
     rpc_url: &str,
     rpc_user: &str,
@@ -155,12 +262,10 @@ pub fn read_raw_block_via_rpc(
 ) -> Result<Vec<u8>, String> {
     let client = reqwest::blocking::Client::new();
 
-    // getblockhash
     let hash_resp = rpc_call(&client, rpc_url, rpc_user, rpc_pass,
         "getblockhash", &[serde_json::json!(height)])?;
     let hash = hash_resp.as_str().ok_or("getblockhash非字符串")?;
 
-    // getblock verbosity=0 → raw hex
     let raw_resp = rpc_call(&client, rpc_url, rpc_user, rpc_pass,
         "getblock", &[serde_json::json!(hash), serde_json::json!(0)])?;
     let raw_hex = raw_resp.as_str().ok_or("getblock非字符串")?;
@@ -210,7 +315,7 @@ pub fn generate_proof(
     let heights1 = derive_heights(&seed1, block_height);
     let hash1 = compute_round(&seed1, &heights1, pubkey, get_raw_block)?;
 
-    // ── Round 2 (依赖Round 1结果) ──
+    // ── Round 2 ──
     let hash1_bytes: [u8; 32] = hex::decode(&hash1)
         .map_err(|e| e.to_string())?.try_into().map_err(|_| "len")?;
     let seed2 = make_seed(&hash1_bytes, pubkey, b"r2");
@@ -218,7 +323,6 @@ pub fn generate_proof(
     let hash2 = compute_round(&seed2, &heights2, pubkey, get_raw_block)?;
     let t2 = now();
 
-    // ── 时间窗口检查 ──
     if t2 - t1 > MAX_ROUND_GAP_SECS {
         return Err(format!(
             "两轮耗时{}秒 > {}秒限制。请确保数据在SSD上。",
@@ -226,7 +330,6 @@ pub fn generate_proof(
         ));
     }
 
-    // ── 组合 ──
     let combined = sha256_two(
         &hex::decode(&hash1).unwrap(),
         &hex::decode(&hash2).unwrap(),
@@ -246,7 +349,6 @@ pub fn verify_proof(
     proof: &TwoRoundProof,
     get_raw_block: &dyn Fn(u32) -> Result<Vec<u8>, String>,
 ) -> Result<(), String> {
-    // 时间窗口
     let gap = proof.round2_ts.saturating_sub(proof.round1_ts);
     if gap > MAX_ROUND_GAP_SECS {
         return Err(format!("时间差{}s > {}s", gap, MAX_ROUND_GAP_SECS));
@@ -257,38 +359,24 @@ pub fn verify_proof(
     let bh: [u8; 32] = hex::decode(&proof.block_hash)
         .map_err(|e| e.to_string())?.try_into().map_err(|_| "bh len")?;
 
-    // 重算 Round 1
     let seed1 = make_seed(&bh, &pubkey, b"r1");
     let exp_h1 = derive_heights(&seed1, proof.block_height);
-    if exp_h1 != proof.round1_heights {
-        return Err("R1 heights篡改".into());
-    }
+    if exp_h1 != proof.round1_heights { return Err("R1 heights篡改".into()); }
     let exp_hash1 = compute_round(&seed1, &exp_h1, &pubkey, get_raw_block)?;
-    if exp_hash1 != proof.round1_hash {
-        return Err("R1 hash不匹配".into());
-    }
+    if exp_hash1 != proof.round1_hash { return Err("R1 hash不匹配".into()); }
 
-    // 重算 Round 2
-    let h1b: [u8; 32] = hex::decode(&proof.round1_hash)
-        .unwrap().try_into().unwrap();
+    let h1b: [u8; 32] = hex::decode(&proof.round1_hash).unwrap().try_into().unwrap();
     let seed2 = make_seed(&h1b, &pubkey, b"r2");
     let exp_h2 = derive_heights(&seed2, proof.block_height);
-    if exp_h2 != proof.round2_heights {
-        return Err("R2 heights篡改".into());
-    }
+    if exp_h2 != proof.round2_heights { return Err("R2 heights篡改".into()); }
     let exp_hash2 = compute_round(&seed2, &exp_h2, &pubkey, get_raw_block)?;
-    if exp_hash2 != proof.round2_hash {
-        return Err("R2 hash不匹配".into());
-    }
+    if exp_hash2 != proof.round2_hash { return Err("R2 hash不匹配".into()); }
 
-    // 组合
     let exp_combined = hex::encode(sha256_two(
         &hex::decode(&proof.round1_hash).unwrap(),
         &hex::decode(&proof.round2_hash).unwrap(),
     ));
-    if exp_combined != proof.combined {
-        return Err("combined不匹配".into());
-    }
+    if exp_combined != proof.combined { return Err("combined不匹配".into()); }
 
     Ok(())
 }
@@ -317,13 +405,11 @@ fn derive_heights(seed: &[u8; 32], max: u32) -> Vec<u32> {
     out
 }
 
-/// 第三道防线: 深层切片
-/// 在区块体(跳过80字节header)内按seed取32字节
 fn extract_slice(raw: &[u8], seed: &[u8; 32], height: u32) -> Result<[u8; 32], String> {
-    if raw.len() < 113 { // 80 header + 至少33 body
+    if raw.len() < 113 {
         return Err(format!("区块{}太小: {}B", height, raw.len()));
     }
-    let body = &raw[80..]; // 跳过区块头
+    let body = &raw[80..];
 
     let off_h = sha256_two(seed, &height.to_le_bytes());
     let off = u32::from_le_bytes([off_h[0], off_h[1], off_h[2], off_h[3]]) as usize
@@ -372,7 +458,6 @@ mod tests {
     use super::*;
 
     fn mock_block(height: u32) -> Vec<u8> {
-        // 模拟区块: 80字节header + 920字节body = 1KB
         let mut data = vec![0u8; 1000];
         for (i, b) in data.iter_mut().enumerate() {
             *b = ((height as usize * 7 + i * 13 + 42) % 256) as u8;
@@ -385,7 +470,6 @@ mod tests {
         let bh = [0xAB; 32];
         let pk = [0x02; 33];
         let getter = |h: u32| -> Result<Vec<u8>, String> { Ok(mock_block(h)) };
-
         let proof = generate_proof(&bh, &hex::encode(bh), 10000, &pk, &getter).unwrap();
         assert!(verify_proof(&proof, &getter).is_ok());
     }
@@ -395,13 +479,10 @@ mod tests {
         let bh = [0xAB; 32];
         let pk = [0x02; 33];
         let real = |h: u32| -> Result<Vec<u8>, String> { Ok(mock_block(h)) };
-
         let proof = generate_proof(&bh, &hex::encode(bh), 10000, &pk, &real).unwrap();
-
-        // 用不同数据验证
         let fake = |h: u32| -> Result<Vec<u8>, String> {
             let mut d = mock_block(h);
-            d[100] ^= 0xFF; // 篡改一字节
+            d[100] ^= 0xFF;
             Ok(d)
         };
         assert!(verify_proof(&proof, &fake).is_err());
@@ -422,5 +503,16 @@ mod tests {
         for &h in &derive_heights(&seed, max) {
             assert!(h >= 1 && h < max);
         }
+    }
+
+    #[test]
+    fn xor_decrypt_roundtrip() {
+        let key: [u8; 8] = [0x8e, 0x5d, 0xcd, 0xa8, 0xa6, 0x43, 0xbf, 0xc1];
+        let original = vec![0xF9, 0xBE, 0xB4, 0xD9, 0x1D, 0x01, 0x00, 0x00];
+        let mut encrypted = original.clone();
+        xor_decrypt(&mut encrypted, &key, 0); // encrypt
+        assert_ne!(encrypted, original);
+        xor_decrypt(&mut encrypted, &key, 0); // decrypt back
+        assert_eq!(encrypted, original);
     }
 }
