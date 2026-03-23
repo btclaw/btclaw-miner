@@ -204,7 +204,7 @@ Send at least **10,000 sats** to your Taproot address:
 
 Select `[4]` Mainnet Mint:
 1. Select wallet (auto-detected from Bitcoin Core)
-2. Enter WIF private key
+2. Enter the wallet number (for example, enter 1 for an already created wallet).
 3. Set fee rate (minimum 0.1 sat/vB)
 4. Confirm and broadcast
 
