@@ -317,13 +317,6 @@ Sequence numbers are **assigned by the Indexer** based on transaction position w
 
 The protocol has undergone adversarial review. Key findings and responses:
 
-| Finding | Status |
-|---------|--------|
-| Identity not bound to signing key | ✅ Fixed — `pk` field added, Indexer verifies |
-| JSON serialization non-deterministic | ✅ Not applicable — Rust `serde_json` is deterministic by struct field order |
-| Race condition on proof dedup | ✅ Not applicable — single-threaded sequential processing |
-| DoS via expensive proof verification | ✅ Fixed — cheap prefilter before full verify |
-| Multi-indexer state divergence | ⚠️ Known limitation — same as BRC-20/Runes (off-chain indexer model) |
 
 ---
 
