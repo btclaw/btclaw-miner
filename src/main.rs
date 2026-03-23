@@ -501,7 +501,20 @@ print(wif)
                             if hex_data.len() > 6 {
                                 let data_start = if &hex_data[2..4] == "4c" { 6 } else { 4 };
                                 if let Ok(data) = hex::decode(&hex_data[data_start..]) {
-                                    if data.len() >= 68 {
+                                    if let Ok(text) = String::from_utf8(data.clone()) {
+                                        if text.starts_with("NXS:") {
+                                            let parts: Vec<&str> = text.split(':').collect();
+                                            println!("  ┌── OP_RETURN Layer / 协议层 ──");
+                                            println!("  │ Raw:         {}", text);
+                                            if parts.len() >= 4 {
+                                                println!("  │ Magic:       NXS");
+                                                println!("  │ Version:     {}", parts[1]);
+                                                println!("  │ Wit Hash:    {}", parts[2].strip_prefix("w=").unwrap_or(parts[2]));
+                                                println!("  │ Proof Hash:  {}", parts[3].strip_prefix("p=").unwrap_or(parts[3]));
+                                            }
+                                            println!("  └────────────────────────────────");
+                                        }
+                                    } else if data.len() >= 68 {
                                         println!("  ┌── OP_RETURN Layer / 协议层 ──");
                                         println!("  │ Magic:       {}", String::from_utf8_lossy(&data[0..3]));
                                         println!("  │ Version:     {}", data[3]);
@@ -588,16 +601,47 @@ fn menu_mainnet_mint() {
         return;
     };
 
+    // 自动从钱包文件读取WIF
+    let wallet_file = format!("{}_wallet.json", wallet_name);
+    let privkey_wif = if let Ok(json_str) = std::fs::read_to_string(&wallet_file) {
+        if let Ok(data) = serde_json::from_str::<serde_json::Value>(&json_str) {
+            // 优先taproot，其次native_segwit
+            let wif = data["addresses"]["taproot"]["wif"].as_str()
+                .or_else(|| data["addresses"]["native_segwit"]["wif"].as_str())
+                .or_else(|| data["addresses"]["nested_segwit"]["wif"].as_str());
+            if let Some(w) = wif {
+                let addr = data["addresses"]["taproot"]["address"].as_str().unwrap_or("?");
+                println!("  Wallet file: {}", wallet_file);
+                println!("  Address: {}", addr);
+                println!("  WIF: {}...{}", &w[..8], &w[w.len()-4..]);
+                println!("");
+                w.to_string()
+            } else {
+                println!("  ⚠ No WIF found in {}. Enter manually:", wallet_file);
+                print!("  WIF private key: ");
+                io::stdout().flush().unwrap();
+                let w = read_line().trim().to_string();
+                if w.is_empty() { println!("  Cancelled"); return; }
+                w
+            }
+        } else {
+            println!("  ⚠ Cannot parse {}. Enter manually:", wallet_file);
+            print!("  WIF private key: ");
+            io::stdout().flush().unwrap();
+            let w = read_line().trim().to_string();
+            if w.is_empty() { println!("  Cancelled"); return; }
+            w
+        }
+    } else {
+        println!("  ⚠ No wallet file found ({}). Enter WIF manually:", wallet_file);
+        print!("  WIF private key / 输入WIF私钥: ");
+        io::stdout().flush().unwrap();
+        let w = read_line().trim().to_string();
+        if w.is_empty() { println!("  Cancelled"); return; }
+        w
+    };
+
     println!("");
-    print!("  Enter WIF private key / 输入WIF私钥: ");
-    io::stdout().flush().unwrap();
-    let privkey_wif = read_line().trim().to_string();
-
-    if privkey_wif.is_empty() {
-        println!("  Cancelled / 已取消");
-        return;
-    }
-
     print!("  Fee rate (sat/vB, min 0.1) / 矿工费率: ");
     io::stdout().flush().unwrap();
     let fee_rate_f: f64 = read_line().trim().parse().unwrap_or(1.0);
