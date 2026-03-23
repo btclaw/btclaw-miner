@@ -27,7 +27,7 @@ NEXUS is the first protocol that requires **both layers simultaneously**, with e
 
 ```
 ┌─────────────────────────────────────────────────────┐
-│                  NEXUS Mint Transaction              │
+│                 NEXUS Mint Transaction              │
 │                                                     │
 │  WITNESS LAYER (Inscription)                        │
 │  ┌───────────────────────────────────────┐          │
