@@ -27,23 +27,23 @@ NEXUS is the first protocol that requires **both layers simultaneously**, with e
 
 ```
 ┌─────────────────────────────────────────────────────┐
-│                 NEXUS Mint Transaction              │
+│                 NEXUS Mint Transaction               │
 │                                                     │
-│  WITNESS LAYER (Inscription)                        │
+│  WITNESS LAYER (Inscription JSON)                   │
 │  ┌───────────────────────────────────────┐          │
-│  │ protocol:    "nexus"                  │          │
-│  │ operation:   "mint"                   │          │
-│  │ amount:      500 NXS                  │          │
-│  │ node_proof:  <full node proof hash>   │          │
-│  │ opr_hash:    SHA256(OP_RETURN data) ──┼──┐       │
+│  │ p:       "nexus"                      │          │
+│  │ op:      "mint"                       │          │
+│  │ amt:     500                          │          │
+│  │ pk:      <minter x-only pubkey>       │          │
+│  │ fnp:     <full node proof hash>       │          │
+│  │ opr:     SHA256(OP_RETURN data) ──────┼──┐       │
 │  └───────────────────────────────────────┘  │       │
 │                                             │       │
-│  OP_RETURN LAYER (Protocol)                 │       │
+│  OP_RETURN LAYER (ASCII readable)           │       │
 │  ┌───────────────────────────────────────┐  │       │
-│  │ magic:       "NXS"                    │  │       │
-│  │ version:     1                        │  │       │
-│  │ wit_hash:    SHA256(Witness data) ────┼──┘       │
-│  │ proof_hash:  <full node proof hash>   │          │
+│  │ NXS:1:w=<wit_hash>:p=<proof_hash>    │  │       │
+│  │         ↑                             │  │       │
+│  │   SHA256(Witness without opr) ────────┼──┘       │
 │  └───────────────────────────────────────┘          │
 │                                                     │
 │  OUTPUT[0]: 330 sats → minter (token holder)        │
@@ -53,6 +53,25 @@ NEXUS is the first protocol that requires **both layers simultaneously**, with e
 ```
 
 **The two layers reference each other's hash. Tamper with one, the other breaks. This is the interlock.**
+
+### On-Chain Data Format
+
+**Witness JSON** (embedded in Taproot inscription):
+```json
+{
+  "p": "nexus",
+  "op": "mint",
+  "amt": 500,
+  "pk": "b4906faaf2724a59...",
+  "fnp": "a14075ce74aabea5...",
+  "opr": "02935680defa678f..."
+}
+```
+
+**OP\_RETURN** (human-readable on any block explorer):
+```
+NXS:1:w=b8a4cee75bc2a205:p=a14075ce74aabea5
+```
 
 ---
 
@@ -154,12 +173,12 @@ cargo build --release --features regtest
 
 ────────────────────────────────────────────────────────────
 
-  [1]  Install / Sync Full Node     
-  [2]  Sync Progress                
-  [3]  Testnet Mint (regtest)       
-  [4]  Mainnet Mint                 
-  [5]  Wallet Info                  
-  [6]  Create Wallet                
+  [1]  Install / Sync Full Node
+  [2]  Sync Progress
+  [3]  Testnet Mint (regtest)
+  [4]  Mainnet Mint
+  [5]  Wallet Info
+  [6]  Create Wallet
 
   [0]  Exit
 ```
@@ -204,7 +223,7 @@ Send at least **10,000 sats** to your Taproot address:
 
 Select `[4]` Mainnet Mint:
 1. Select wallet (auto-detected from Bitcoin Core)
-2. Enter the wallet number (for example, enter 1 for an already created wallet).
+2. Enter the wallet number (e.g. enter 1 for an already created wallet)
 3. Set fee rate (minimum 0.1 sat/vB)
 4. Confirm and broadcast
 
@@ -231,8 +250,8 @@ nexus-protocol/
 │   ├── lib.rs           # Module exports
 │   ├── constants.rs     # Protocol parameters (mainnet/regtest via feature flag)
 │   ├── proof.rs         # Full node proof + Bitcoin Core 30.x obfuscation support
-│   ├── transaction.rs   # Dual-layer interlock construction + verification
-│   ├── indexer.rs       # Transaction validation engine (6 rules)
+│   ├── transaction.rs   # Dual-layer interlock + pk identity binding
+│   ├── indexer.rs       # Transaction validation engine (7 rules + DoS prefilter)
 │   ├── node_detect.rs   # Auto-detect Bitcoin node + path management
 │   └── ui.rs            # Terminal UI with color
 ├── scripts/
@@ -253,29 +272,30 @@ nexus-protocol/
          │
 [2] Generate Proof  Two-round challenge → 20 random blocks → 15s window
          │
-[3] Build Interlock Witness payload ←SHA256→ OP_RETURN payload
+[3] Build Interlock Witness JSON (with pk) ←SHA256→ OP_RETURN (ASCII)
          │
 [4] Commit TX       BTC → Taproot address with inscription script tree
          │
-[5] Reveal TX       Script-path spend → inscription + OP_RETURN + 5000 sat fee
+[5] Reveal TX       Script-path spend → inscription + OP_RETURN + fee
          │
-[6] Confirmed       Block inclusion → Indexer validates → 500 NXS credited
+[6] Confirmed       Block inclusion → Indexer validates 7 rules → 500 NXS credited
 ```
 
 ---
 
 ## Indexer Validation Rules
 
-A mint is valid if and only if **all 6 conditions** are met:
+A mint is valid if and only if **all rules** pass (ordered by cost — cheap checks first to prevent DoS):
 
-1. Witness inscription contains `"nexus"` protocol identifier and valid JSON
-2. OP\_RETURN starts with `"NXS"` magic bytes with correct binary format (68 bytes)
-3. Dual-layer interlock hashes match (cross-verified)
-4. Full node proof passes two-round verification (replay protection via used-proof table)
-5. Exactly 5,000 sats sent to the protocol fee address
-6. Total mints ≤ 42,000 (supply cap not exceeded)
+1. **Format**: Witness inscription contains `"nexus"` protocol identifier and valid JSON with required fields (`p`, `op`, `amt`, `pk`, `fnp`, `opr`)
+2. **OP\_RETURN**: Starts with `NXS:` prefix, correct ASCII format (`NXS:1:w=<16hex>:p=<16hex>`)
+3. **Fee**: Exactly 5,000 sats sent to the protocol fee address (checked early to reject spam)
+4. **Interlock**: Dual-layer hashes match — `SHA256(OP_RETURN) == witness.opr` and `SHA256(witness_without_opr)[..8] == OP_RETURN.w`
+5. **Identity**: `pk` field in JSON must match the Taproot x-only public key that signed the transaction (prevents identity spoofing)
+6. **Proof**: Full node proof passes two-round verification with precheck (heights count, time window, field lengths) + replay protection via used-proof table
+7. **Supply**: Total mints ≤ 42,000 (supply cap not exceeded)
 
-Sequence numbers are **assigned by the Indexer** based on transaction position within each block. Users do not choose their own sequence — first confirmed, first served.
+Sequence numbers are **assigned by the Indexer** based on transaction position within each block. First confirmed, first served.
 
 ---
 
@@ -285,36 +305,50 @@ Sequence numbers are **assigned by the Indexer** based on transaction position w
 |--------------|---------|
 | API relay (no full node) | Two-round 15s window. Local ~100ms vs API ~5-15s |
 | Pruned node disguise | Direct disk read: blk files > 500GB + early files exist |
-| Shared Reactor proxy | Proof bound to minter's public key |
+| Identity spoofing | `pk` field bound to Taproot signing key + Indexer cross-check |
 | Proof replay | Used-proof deduplication in Indexer |
-| Interlock tampering | Bidirectional SHA-256 hash verification |
+| Interlock tampering | Bidirectional SHA-256 hash verification (pk participates in hash) |
 | Mint ordering | Indexer assigns sequence by tx position in block — FCFS |
 | Bitcoin Core 30.x encryption | Auto-detect obfuscation key, XOR decrypt blk files |
+| DoS (spam invalid proofs) | Cheap checks first (fee, format, interlock) before expensive proof verification |
+| Unlimited mint | Fixed `amt=500`, supply cap enforced, proof uniqueness |
+
+### Security Audit Summary
+
+The protocol has undergone adversarial review. Key findings and responses:
+
+| Finding | Status |
+|---------|--------|
+| Identity not bound to signing key | ✅ Fixed — `pk` field added, Indexer verifies |
+| JSON serialization non-deterministic | ✅ Not applicable — Rust `serde_json` is deterministic by struct field order |
+| Race condition on proof dedup | ✅ Not applicable — single-threaded sequential processing |
+| DoS via expensive proof verification | ✅ Fixed — cheap prefilter before full verify |
+| Multi-indexer state divergence | ⚠️ Known limitation — same as BRC-20/Runes (off-chain indexer model) |
 
 ---
 
 ## On-Chain Verification
 
-Every NEXUS mint is permanently visible on-chain with two layers of data:
+Every NEXUS mint is permanently visible on any block explorer:
 
+**OP\_RETURN (human-readable):**
 ```
-┌── Witness Layer / Inscription ──
-│ Protocol:    nexus
-│ Operation:   mint
-│ Amount:      500 NXS
-│ Node Proof:  4805dd3c7b566ea7...
-│ OPR Hash:    49268182887e3829...
-└─────────────────────────────────
-
-┌── OP_RETURN Layer / Protocol ──
-│ Magic:       NXS
-│ Version:     1
-│ Wit Hash:    6b51e93a6e32e477...
-│ Proof Hash:  4805dd3c7b566ea7...
-└─────────────────────────────────
+NXS:1:w=b8a4cee75bc2a205:p=a14075ce74aabea5
 ```
 
-Both layers cross-reference each other. Both contain the same full node proof hash.
+**Witness inscription (JSON):**
+```json
+{
+  "p": "nexus",
+  "op": "mint",
+  "amt": 500,
+  "pk": "b4906faaf2724a591af6ae26aed26c355e65f70565d4c3c0665eeebcbc58332d",
+  "fnp": "a14075ce74aabea522d36247e144ea019bda1cb79393323f1133ee3b59344c9f",
+  "opr": "02935680defa678f4df10356b5254c0966718d58280e5d3ca89ac05cc7002ba3"
+}
+```
+
+Both layers cross-reference each other. The `pk` field binds the mint to the signing key.
 
 ---
 
@@ -343,6 +377,9 @@ The barrier IS the value. Bitcoin was meant to be run by node operators, not web
 
 **Q: Can someone build a web minter?**
 No. The full node proof requires reading raw bytes from local `blk*.dat` files at random offsets determined by the latest block hash. No public API provides this data in the required format within the 15-second window.
+
+**Q: Can someone fake a mint?**
+No. The Indexer validates 7 rules including dual-layer hash interlock, identity binding (pk must match signing key), proof uniqueness, and fee payment. Forging any single element breaks the chain.
 
 **Q: Is there a premine or team allocation?**
 No. Zero premine. The protocol fee address receives 5,000 sats per mint — that's it. All 21,000,000 NXS are distributed through fair minting.
