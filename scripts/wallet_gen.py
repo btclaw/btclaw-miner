@@ -10,6 +10,7 @@ import json
 
 try:
     from bip_utils import (
+        Bip44Changes,
         Bip39MnemonicGenerator, Bip39SeedGenerator, Bip39WordsNum,
         Bip86, Bip86Coins,
         Bip84, Bip84Coins,
@@ -31,7 +32,7 @@ def generate_wallet(addr_type="all"):
     if addr_type in ["all", "taproot"]:
         # BIP86: m/86'/0'/0'/0/0 → Taproot (bc1p...)
         bip86 = Bip86.FromSeed(seed, Bip86Coins.BITCOIN)
-        key = bip86.Purpose().Coin().Account(0).Change(Bip86.CHANGE_TYPE_EXTERNAL).AddressIndex(0)
+        key = bip86.Purpose().Coin().Account(0).Change(Bip44Changes.CHAIN_EXT).AddressIndex(0)
         results["taproot"] = {
             "path": "m/86'/0'/0'/0/0",
             "address": key.PublicKey().ToAddress(),
@@ -41,7 +42,7 @@ def generate_wallet(addr_type="all"):
     if addr_type in ["all", "native_segwit"]:
         # BIP84: m/84'/0'/0'/0/0 → Native SegWit (bc1q...)
         bip84 = Bip84.FromSeed(seed, Bip84Coins.BITCOIN)
-        key = bip84.Purpose().Coin().Account(0).Change(Bip84.CHANGE_TYPE_EXTERNAL).AddressIndex(0)
+        key = bip84.Purpose().Coin().Account(0).Change(Bip44Changes.CHAIN_EXT).AddressIndex(0)
         results["native_segwit"] = {
             "path": "m/84'/0'/0'/0/0",
             "address": key.PublicKey().ToAddress(),
@@ -51,7 +52,7 @@ def generate_wallet(addr_type="all"):
     if addr_type in ["all", "nested_segwit"]:
         # BIP49: m/49'/0'/0'/0/0 → Nested SegWit (3...)
         bip49 = Bip49.FromSeed(seed, Bip49Coins.BITCOIN)
-        key = bip49.Purpose().Coin().Account(0).Change(Bip49.CHANGE_TYPE_EXTERNAL).AddressIndex(0)
+        key = bip49.Purpose().Coin().Account(0).Change(Bip44Changes.CHAIN_EXT).AddressIndex(0)
         results["nested_segwit"] = {
             "path": "m/49'/0'/0'/0/0",
             "address": key.PublicKey().ToAddress(),
