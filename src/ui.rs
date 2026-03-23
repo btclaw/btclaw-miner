@@ -37,6 +37,7 @@ pub fn main_menu() {
     println!("    {G}{B}[3]{R}  {W}Testnet Mint (regtest)       {D}测试网铸造{R}");
     println!("    {Y}{B}[4]{R}  {W}Mainnet Mint                 {D}主网铸造{R}");
     println!("    {W}{B}[5]{R}  {W}Wallet Info                  {D}钱包信息{R}");
+    println!("    {C}{B}[6]{R}  {W}Create Wallet                {D}创建钱包{R}");
     println!();
     println!("    {D}[0]  Exit 退出{R}");
     println!();
