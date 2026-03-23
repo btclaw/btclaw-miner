@@ -27,7 +27,7 @@ NEXUS is the first protocol that requires **both layers simultaneously**, with e
 
 ```
 ┌─────────────────────────────────────────────────────┐
-│                 NEXUS Mint Transaction               │
+│                NEXUS Mint Transaction               │
 │                                                     │
 │  WITNESS LAYER (Inscription JSON)                   │
 │  ┌───────────────────────────────────────┐          │
@@ -41,7 +41,7 @@ NEXUS is the first protocol that requires **both layers simultaneously**, with e
 │                                             │       │
 │  OP_RETURN LAYER (ASCII readable)           │       │
 │  ┌───────────────────────────────────────┐  │       │
-│  │ NXS:1:w=<wit_hash>:p=<proof_hash>    │  │       │
+│  │ NXS:1:w=<wit_hash>:p=<proof_hash>    │   │       │
 │  │         ↑                             │  │       │
 │  │   SHA256(Witness without opr) ────────┼──┘       │
 │  └───────────────────────────────────────┘          │
