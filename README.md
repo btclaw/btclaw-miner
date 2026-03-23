@@ -313,11 +313,6 @@ Sequence numbers are **assigned by the Indexer** based on transaction position w
 | DoS (spam invalid proofs) | Cheap checks first (fee, format, interlock) before expensive proof verification |
 | Unlimited mint | Fixed `amt=500`, supply cap enforced, proof uniqueness |
 
-### Security Audit Summary
-
-The protocol has undergone adversarial review. Key findings and responses:
-
-
 ---
 
 ## On-Chain Verification
