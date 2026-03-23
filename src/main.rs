@@ -4,8 +4,9 @@ mod ui;
 /// [1] 安装/同步 BTC全节点
 /// [2] 查看同步进度
 /// [3] 测试网铸造 (regtest)
-/// [4] 主网铸造状态 + 执行铸造
-/// [5] 钱包信息 (UTXO/余额/代币)
+/// [4] 主网铸造
+/// [5] 钱包信息
+/// [6] 创建钱包
 /// [0] 退出
 
 use std::io::{self, Write};
@@ -28,6 +29,7 @@ use std::str::FromStr;
 use nexus_reactor::constants::*;
 use nexus_reactor::proof;
 use nexus_reactor::transaction;
+use nexus_reactor::node_detect;
 
 // ═══════════════════════════════════════════
 //  主菜单
@@ -36,8 +38,21 @@ use nexus_reactor::transaction;
 fn main() {
     print_banner();
 
-    loop {
+    // 自动检测全节点
+    let mut config = node_detect::NexusConfig::load();
+    println!("  Scanning for Bitcoin node... / 正在检测全节点...");
+    println!();
+    let detection = node_detect::detect_node(&config);
+    node_detect::print_detection(&detection);
+    if detection.found && config.bitcoin_datadir.is_none() {
+        config.bitcoin_datadir = Some(detection.datadir.clone());
+        config.save();
+        println!();
+        println!("  \x1b[90mPath saved to nexus_config.json\x1b[0m");
+    }
+    println!();
 
+    loop {
         ui::main_menu();
 
         let choice = read_line().trim().to_string();
@@ -49,17 +64,55 @@ fn main() {
             "3" => menu_testnet_mint(),
             "4" => menu_mainnet_mint(),
             "5" => menu_wallet_info(),
+            "6" => menu_create_wallet(),
             "0" | "q" | "exit" => {
                 println!("  👋 再见!");
                 break;
             }
-            _ => println!("  ⚠️  无效选择，请输入 0-5"),
+            _ => println!("  ⚠️  无效选择，请输入 0-6"),
         }
     }
 }
 
 fn print_banner() {
     ui::banner();
+}
+
+// ═══════════════════════════════════════════
+//  RPC辅助 — 从config读取密码
+// ═══════════════════════════════════════════
+
+fn get_rpc_config() -> (String, String) {
+    let config = node_detect::NexusConfig::load();
+    (config.rpc_user, config.rpc_pass)
+}
+
+fn btc_cli_output(args: &[&str], regtest: bool) -> String {
+    let (rpc_user, rpc_pass) = get_rpc_config();
+    let mut cmd = Command::new("bitcoin-cli");
+    if regtest {
+        cmd.arg("-regtest");
+    }
+    cmd.arg(format!("-rpcuser={}", rpc_user));
+    cmd.arg(format!("-rpcpassword={}", rpc_pass));
+    cmd.args(args);
+
+    match cmd.output() {
+        Ok(o) => {
+            let stdout = String::from_utf8_lossy(&o.stdout).to_string();
+            let stderr = String::from_utf8_lossy(&o.stderr).to_string();
+            if !stderr.is_empty() && stdout.is_empty() {
+                return format!("error: {}", stderr);
+            }
+            stdout
+        }
+        Err(e) => format!("error: {}", e),
+    }
+}
+
+fn btc_cli(args: &[&str], regtest: bool) -> bool {
+    let output = btc_cli_output(args, regtest);
+    !output.contains("error")
 }
 
 // ═══════════════════════════════════════════
@@ -118,50 +171,99 @@ fn install_bitcoin_core() {
 
 fn start_mainnet_sync() {
     println!("");
-    println!("  ⚠️  主网同步需要:");
-    println!("    - 磁盘空间: ~600GB (SSD推荐)");
-    println!("    - 同步时间: 1-7天 (取决于网络和硬件)");
-    println!("    - 内存: 建议 4GB+");
+    println!("  ⚠️  Mainnet sync requirements / 主网同步需要:");
+    println!("    - Disk / 磁盘: ~850GB (SSD recommended)");
+    println!("    - Time / 时间: 8-72h (depends on hardware)");
+    println!("    - RAM / 内存: 4GB+ (more = faster)");
     println!("");
-    print!("  确定开始? (y/n) > ");
+
+    let config = node_detect::NexusConfig::load();
+    let det = node_detect::detect_node(&config);
+    if det.found && det.running {
+        println!("  ⚠️  Node already running / 节点已在运行!");
+        node_detect::print_detection(&det);
+        println!();
+        print!("  Continue anyway? / 仍然继续? (y/n) > ");
+        io::stdout().flush().unwrap();
+        if read_line().trim().to_lowercase() != "y" {
+            println!("  Cancelled / 已取消");
+            return;
+        }
+    }
+
+    let datadir = node_detect::choose_datadir();
+    println!("");
+    println!("  Data directory / 数据目录: {}", datadir);
+    println!("");
+    print!("  Start sync? / 确定开始? (y/n) > ");
     io::stdout().flush().unwrap();
 
     if read_line().trim().to_lowercase() != "y" {
-        println!("  已取消");
+        println!("  Cancelled / 已取消");
         return;
     }
 
-    // 写配置
-    std::fs::create_dir_all(expand_home("~/.bitcoin")).ok();
-    let conf = r#"server=1
+    std::fs::create_dir_all(&datadir).ok();
+
+    let mem_gb = get_system_memory_gb();
+    let dbcache = ((mem_gb as u64).saturating_sub(4) * 1024).max(2048).min(32000);
+    let (rpc_user, rpc_pass) = get_rpc_config();
+
+    let conf = format!(
+"server=1
 txindex=1
-rpcuser=nexus
-rpcpassword=nexustest123
-dbcache=2048
+rpcuser={}
+rpcpassword={}
+fallbackfee=0.00001
+
+# Auto-configured: {}GB RAM detected
+dbcache={}
+par=0
+maxconnections=80
+blocksonly=1
+assumevalid=0000000000000000000220e01aac81f0a001c38c8a51e54688a9ded7b1db93ed
 
 [main]
 rpcport=8332
 rpcallowip=127.0.0.1
 rpcbind=127.0.0.1
-"#;
-    std::fs::write(expand_home("~/.bitcoin/bitcoin.conf"), conf).ok();
+", rpc_user, rpc_pass, mem_gb, dbcache);
 
-    // 启动
-    let _ = Command::new("bitcoind").arg("-daemon").spawn();
-    println!("  ✅ 主网节点已启动! 使用选项 [2] 查看同步进度");
+    std::fs::write(format!("{}/bitcoin.conf", datadir), &conf).ok();
+
+    let _ = Command::new("bitcoind")
+        .arg(format!("-datadir={}", datadir))
+        .arg("-daemon")
+        .spawn();
+
+    let mut config = node_detect::NexusConfig::load();
+    config.bitcoin_datadir = Some(datadir.clone());
+    config.save();
+
+    println!("");
+    println!("  ✅ Node started! / 节点已启动!");
+    println!("     Datadir: {}", datadir);
+    println!("     dbcache: {} MB ({}GB RAM detected)", dbcache, mem_gb);
+    println!("     Use [2] to check progress / 用[2]查看同步进度");
+}
+
+fn get_system_memory_gb() -> u32 {
+    Command::new("bash").arg("-c")
+        .arg("grep MemTotal /proc/meminfo | awk '{print int($2/1024/1024)}'")
+        .output().ok()
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().parse().unwrap_or(8))
+        .unwrap_or(8)
 }
 
 fn start_regtest_node() {
     println!("");
     println!("  🧪 启动regtest测试节点...");
 
-    // 停旧的
     let _ = Command::new("bitcoin-cli")
         .args(["-regtest", "-rpcuser=nexus", "-rpcpassword=nexustest123", "stop"])
         .output();
     std::thread::sleep(std::time::Duration::from_secs(2));
 
-    // 写配置
     std::fs::create_dir_all(expand_home("~/.bitcoin")).ok();
     let conf = r#"regtest=1
 server=1
@@ -179,14 +281,11 @@ datacarriersize=100000
 "#;
     std::fs::write(expand_home("~/.bitcoin/bitcoin.conf"), conf).ok();
 
-    // 启动
     let _ = Command::new("bitcoind").arg("-regtest").arg("-daemon").spawn();
     std::thread::sleep(std::time::Duration::from_secs(3));
 
-    // 创建钱包
     btc_cli(&["createwallet", "nexus_test"], true);
 
-    // 挖200个区块
     let addr = btc_cli_output(&["getnewaddress", "", "bech32m"], true);
     let addr = addr.trim();
     btc_cli(&["generatetoaddress", "200", addr], true);
@@ -202,73 +301,46 @@ datacarriersize=100000
 // ═══════════════════════════════════════════
 
 fn menu_sync_progress() {
-    println!("  ══ 同步进度 ══");
+    println!("  ══ Sync Progress / 同步进度 ══");
     println!("");
 
-    // 先试主网
+    let config = node_detect::NexusConfig::load();
+    let det = node_detect::detect_node(&config);
+
+    if det.found {
+        node_detect::print_detection(&det);
+        if det.running && det.headers > 0 {
+            let remaining = det.headers.saturating_sub(det.blocks);
+            println!("");
+            println!("    Remaining / 剩余: {} blocks", remaining);
+            println!("    Disk / 磁盘:      {:.1} GB", det.size_gb);
+        }
+        return;
+    }
+
     let mainnet = btc_cli_output(&["getblockchaininfo"], false);
-
     if !mainnet.is_empty() && !mainnet.contains("error") {
-        match serde_json::from_str::<serde_json::Value>(&mainnet) {
-            Ok(info) => {
-                let chain = info["chain"].as_str().unwrap_or("?");
-                let blocks = info["blocks"].as_u64().unwrap_or(0);
-                let headers = info["headers"].as_u64().unwrap_or(0);
-                let progress = info["verificationprogress"].as_f64().unwrap_or(0.0);
-                let ibd = info["initialblockdownload"].as_bool().unwrap_or(true);
-                let size_on_disk = info["size_on_disk"].as_u64().unwrap_or(0);
+        if let Ok(info) = serde_json::from_str::<serde_json::Value>(&mainnet) {
+            let blocks = info["blocks"].as_u64().unwrap_or(0);
+            let headers = info["headers"].as_u64().unwrap_or(0);
+            let progress = info["verificationprogress"].as_f64().unwrap_or(0.0);
+            let ibd = info["initialblockdownload"].as_bool().unwrap_or(true);
+            let size_on_disk = info["size_on_disk"].as_u64().unwrap_or(0);
 
-                println!("  网络:       {}", chain);
-                println!("  已同步区块: {}", blocks);
-                println!("  最新区块:   {}", headers);
-
-                if headers > 0 {
-                    let remaining = headers.saturating_sub(blocks);
-                    let pct = progress * 100.0;
-                    
-                    // 进度条
-                    let bar_width = 30;
-                    let filled = (pct / 100.0 * bar_width as f64) as usize;
-                    let empty = bar_width - filled;
-                    let bar = format!("[{}{}]", "█".repeat(filled), "░".repeat(empty));
-
-                    println!("  进度:       {} {:.2}%", bar, pct);
-                    println!("  剩余区块:   {}", remaining);
-                    println!("  磁盘占用:   {:.2} GB", size_on_disk as f64 / 1e9);
-                    
-                    if ibd {
-                        // 估算剩余时间
-                        println!("  状态:       🔄 正在同步 (IBD)");
-                        if blocks > 1000 {
-                            println!("  提示:       预计还需数小时到数天");
-                        }
-                    } else {
-                        println!("  状态:       ✅ 同步完成!");
-                    }
-                }
-                return;
-            }
-            Err(_) => {}
+            println!("  Blocks:     {} / {}", blocks, headers);
+            let pct = progress * 100.0;
+            let bar_w = 30;
+            let filled = (pct / 100.0 * bar_w as f64) as usize;
+            let empty = bar_w - filled;
+            println!("  Progress:   [{}{}] {:.2}%", "█".repeat(filled), "░".repeat(empty), pct);
+            println!("  Disk:       {:.2} GB", size_on_disk as f64 / 1e9);
+            if ibd { println!("  Status:     Syncing..."); } else { println!("  Status:     ✅ Synced!"); }
+            return;
         }
     }
 
-    // 试regtest
-    let regtest = btc_cli_output(&["getblockchaininfo"], true);
-    if !regtest.is_empty() && !regtest.contains("error") {
-        match serde_json::from_str::<serde_json::Value>(&regtest) {
-            Ok(info) => {
-                let blocks = info["blocks"].as_u64().unwrap_or(0);
-                println!("  网络:       regtest (测试网)");
-                println!("  区块高度:   {}", blocks);
-                println!("  状态:       ✅ 本地测试网运行中");
-                return;
-            }
-            Err(_) => {}
-        }
-    }
-
-    println!("  ❌ 没有检测到运行中的Bitcoin Core节点");
-    println!("     请先使用选项 [1] 安装并启动节点");
+    println!("  ❌ No Bitcoin node found / 未检测到节点");
+    println!("     Use [1] to install and sync / 用[1]安装同步");
 }
 
 // ═══════════════════════════════════════════
@@ -279,14 +351,12 @@ fn menu_testnet_mint() {
     println!("  ══ 测试网铸造 (regtest) ══");
     println!("");
 
-    // 检查regtest节点
     let info = btc_cli_output(&["getblockchaininfo"], true);
     if info.is_empty() || info.contains("error") {
-        println!("  ❌ regtest节点未运行。请先用选项 [1c] 启动");
+        println!("  ❌ regtest节点未运行。请先用选项 [1] → [3] 启动");
         return;
     }
 
-    // 检查全节点
     let datadir = expand_home("~/.bitcoin/regtest");
     print!("  [1/4] 验证全节点... ");
     io::stdout().flush().unwrap();
@@ -302,16 +372,13 @@ fn menu_testnet_mint() {
         return;
     }
 
-    // 生成/获取私钥
     println!("  [2/4] 准备钱包...");
     let addr = btc_cli_output(&["getnewaddress", "nexus_minter", "bech32m"], true);
     let addr = addr.trim();
 
-    // 充值
     let _ = btc_cli_output(&["sendtoaddress", addr, "1.0"], true);
     let _ = btc_cli_output(&["generatetoaddress", "1", addr], true);
 
-    // 生成私钥 (用Python因为Bitcoin Core 28移除了dumpprivkey)
     let privkey_output = Command::new("python3")
         .arg("-c")
         .arg(r#"
@@ -326,7 +393,6 @@ print(wif)
         .expect("需要python3和base58库");
     let privkey_wif = String::from_utf8_lossy(&privkey_output.stdout).trim().to_string();
 
-    // 导入私钥
     let desc_info = btc_cli_output(
         &["getdescriptorinfo", &format!("tr({})", privkey_wif)], true
     );
@@ -341,7 +407,6 @@ print(wif)
     );
     let _ = btc_cli_output(&["importdescriptors", &import_json], true);
 
-    // 获取地址
     let derive_desc = format!("tr({})#{}", privkey_wif, checksum);
     let addr_json = btc_cli_output(&["deriveaddresses", &derive_desc], true);
     let minter_addr = serde_json::from_str::<serde_json::Value>(&addr_json)
@@ -349,14 +414,12 @@ print(wif)
         .and_then(|v| v.as_array()?.first()?.as_str().map(|s| s.to_string()))
         .unwrap_or_default();
 
-    // 给铸造者地址充值
     let _ = btc_cli_output(&["sendtoaddress", &minter_addr, "0.5"], true);
     let _ = btc_cli_output(&["generatetoaddress", "1", &minter_addr], true);
 
     println!("    铸造地址: {}", minter_addr);
     println!("    私钥: {}", privkey_wif);
 
-    // 执行铸造
     println!("  [3/4] 执行铸造...");
     println!("");
 
@@ -366,13 +429,12 @@ print(wif)
         "nexus",
         "nexustest123",
         &privkey_wif,
-        1,
+        1.0,
         Network::Regtest,
     );
 
     match result {
         Ok((commit_txid, reveal_txid)) => {
-            // 挖块确认
             println!("  [4/4] 挖块确认...");
             let _ = btc_cli_output(&["generatetoaddress", "1", &minter_addr], true);
 
@@ -382,17 +444,14 @@ print(wif)
             println!("  Reveal: {}", reveal_txid);
             println!("");
 
-            // 验证链上数据
-            println!("");
             println!("  ── 链上验证 On-Chain Verification ──");
             println!("");
             let tx_raw = btc_cli_output(&["getrawtransaction", &reveal_txid, "1"], true);
             if let Ok(tx) = serde_json::from_str::<serde_json::Value>(&tx_raw) {
                 let confirms = tx["confirmations"].as_u64().unwrap_or(0);
-                println!("  确认数 Confirmations: {}", confirms);
+                println!("  Confirmations: {}", confirms);
                 println!("");
 
-                // Outputs
                 if let Some(vouts) = tx["vout"].as_array() {
                     for (i, out) in vouts.iter().enumerate() {
                         let val = out["value"].as_f64().unwrap_or(0.0);
@@ -402,11 +461,9 @@ print(wif)
                 }
                 println!("");
 
-                // 铭文层解码
                 if let Some(wit) = tx["vin"][0]["txinwitness"].as_array() {
                     if wit.len() >= 2 {
                         let script_hex = wit[1].as_str().unwrap_or("");
-                        // 找JSON: 7b22 = {"
                         if let Some(idx) = script_hex.find("7b22") {
                             let json_hex = &script_hex[idx..];
                             let mut depth: i32 = 0;
@@ -425,7 +482,6 @@ print(wif)
                                     if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&json_str) {
                                         println!("  │ Protocol:    {}", parsed["p"].as_str().unwrap_or("?"));
                                         println!("  │ Operation:   {}", parsed["op"].as_str().unwrap_or("?"));
-                                        // seq由Indexer分配，链上数据不含seq
                                         println!("  │ Amount:      {} NXS", parsed["amt"]);
                                         println!("  │ Node Proof:  {}", parsed["fnp"].as_str().unwrap_or("?"));
                                         println!("  │ OPR Hash:    {}", parsed["opr"].as_str().unwrap_or("?"));
@@ -438,7 +494,6 @@ print(wif)
                 }
                 println!("");
 
-                // OP_RETURN层解码
                 if let Some(vouts) = tx["vout"].as_array() {
                     for out in vouts {
                         if out["scriptPubKey"]["type"].as_str() == Some("nulldata") {
@@ -472,30 +527,30 @@ print(wif)
 // ═══════════════════════════════════════════
 
 fn menu_mainnet_mint() {
-    println!("  ══ 主网铸造 ══");
+    println!("  ══ Mainnet Mint / 主网铸造 ══");
     println!("");
 
-    // 检查主网节点
-    let info = btc_cli_output(&["getblockchaininfo"], false);
-    if info.is_empty() || info.contains("error") {
-        println!("  ❌ 主网节点未运行。请先用选项 [1b] 启动并完成同步");
+    let config = node_detect::NexusConfig::load();
+    let det = node_detect::detect_node(&config);
+
+    if !det.found || !det.running {
+        println!("  ❌ No running mainnet node found / 未检测到主网节点");
+        println!("     Use [1] to install and sync / 用[1]安装同步");
         return;
     }
 
-    let parsed = serde_json::from_str::<serde_json::Value>(&info).ok();
-    let ibd = parsed.as_ref()
-        .and_then(|v| v["initialblockdownload"].as_bool())
-        .unwrap_or(true);
-
-    if ibd {
-        println!("  ⚠️  节点还在同步中(IBD), 请等待同步完成后再铸造");
-        println!("     使用选项 [2] 查看同步进度");
+    if det.ibd {
+        println!("  ⚠️  Node still syncing (IBD) / 节点还在同步中");
+        node_detect::print_detection(&det);
+        println!("     Wait for sync to complete / 请等待同步完成");
         return;
     }
 
-    // 验证全节点
-    let datadir = expand_home("~/.bitcoin");
-    print!("  验证全节点... ");
+    node_detect::print_detection(&det);
+    println!("");
+
+    let datadir = det.datadir.clone();
+    print!("  Verifying full node / 验证全节点... ");
     io::stdout().flush().unwrap();
 
     #[cfg(not(feature = "regtest"))]
@@ -509,52 +564,300 @@ fn menu_mainnet_mint() {
         return;
     }
 
-    // 输入私钥
+    // 选择钱包
+    let wallets_json = btc_cli_output(&["listwallets"], false);
+    let wallets: Vec<String> = serde_json::from_str::<serde_json::Value>(&wallets_json)
+        .ok()
+        .and_then(|v| v.as_array().map(|a| a.iter().filter_map(|w| w.as_str().map(|s| s.to_string())).collect()))
+        .unwrap_or_default();
+
+    let wallet_name = if wallets.len() == 1 {
+        println!("  Using wallet: {}", wallets[0]);
+        wallets[0].clone()
+    } else if wallets.len() > 1 {
+        println!("  Wallets:");
+        for (i, w) in wallets.iter().enumerate() {
+            println!("    [{}] {}", i + 1, w);
+        }
+        print!("  Select wallet / 选择钱包: ");
+        io::stdout().flush().unwrap();
+        let sel: usize = read_line().trim().parse().unwrap_or(1);
+        wallets.get(sel.saturating_sub(1)).cloned().unwrap_or_default()
+    } else {
+        println!("  ⚠ No wallet found. Use [6] to create one.");
+        return;
+    };
+
     println!("");
-    print!("  输入你的WIF私钥: ");
+    print!("  Enter WIF private key / 输入WIF私钥: ");
     io::stdout().flush().unwrap();
     let privkey_wif = read_line().trim().to_string();
 
     if privkey_wif.is_empty() {
-        println!("  已取消");
+        println!("  Cancelled / 已取消");
         return;
     }
 
-    // 输入费率
-    print!("  矿工费率 (sat/vB, 建议10-50): ");
+    print!("  Fee rate (sat/vB, min 0.1) / 矿工费率: ");
     io::stdout().flush().unwrap();
-    let fee_rate: u64 = read_line().trim().parse().unwrap_or(10);
+    let fee_rate_f: f64 = read_line().trim().parse().unwrap_or(1.0);
+    let fee_rate_f = if fee_rate_f < 0.1 { 0.1 } else { fee_rate_f };
+    println!("  Fee rate: {} sat/vB", fee_rate_f);
 
     println!("");
-    println!("  ⚠️  即将在BTC主网执行铸造!");
-    println!("     费用: {} sats 铸造费 + 矿工费", MINT_FEE_SATS);
-    print!("  确认? (yes/no) > ");
+    println!("  ⚠️  About to mint on BTC MAINNET! / 即将在主网铸造!");
+    println!("     Fee: {} sats mint fee + miner fee", MINT_FEE_SATS);
+    print!("  Confirm? / 确认? (yes/no) > ");
     io::stdout().flush().unwrap();
 
     if read_line().trim() != "yes" {
-        println!("  已取消");
+        println!("  Cancelled / 已取消");
         return;
     }
 
+    let rpc_url = format!("http://127.0.0.1:8332/wallet/{}", wallet_name);
     let result = execute_mint(
         &datadir,
-        "http://127.0.0.1:8332",
-        "nexus",
-        "nexustest123",
+        &rpc_url,
+        &config.rpc_user,
+        &config.rpc_pass,
         &privkey_wif,
-        fee_rate,
+        fee_rate_f,
         Network::Bitcoin,
     );
 
     match result {
         Ok((commit, reveal)) => {
             println!("");
-            println!("  ✅ 主网铸造交易已广播!");
+            println!("  ✅ Mainnet mint broadcast! / 主网铸造已广播!");
             println!("  Commit: {}", commit);
             println!("  Reveal: {}", reveal);
-            println!("  等待矿工确认...");
+            println!("  Waiting for confirmation... / 等待确认...");
         }
-        Err(e) => println!("  ❌ 铸造失败: {}", e),
+        Err(e) => println!("  ❌ Mint failed / 铸造失败: {}", e),
+    }
+}
+
+// ═══════════════════════════════════════════
+//  [6] 创建钱包
+// ═══════════════════════════════════════════
+
+fn menu_create_wallet() {
+    let c = "\x1b[36m"; let y = "\x1b[33m"; let g = "\x1b[32m";
+    let w = "\x1b[97m"; let d = "\x1b[90m"; let b = "\x1b[1m";
+    let r = "\x1b[0m"; let red = "\x1b[31m";
+
+    println!("  {c}{b}── Create Wallet / 创建钱包 ──{r}");
+    println!();
+    println!("    {y}{b}[1]{r}  {w}Taproot (bc1p...){r}            {d}P2TR - BIP86 推荐{r}");
+    println!("    {y}{b}[2]{r}  {w}Native SegWit (bc1q...){r}      {d}P2WPKH - BIP84{r}");
+    println!("    {y}{b}[3]{r}  {w}Nested SegWit (3...){r}         {d}P2SH-P2WPKH - BIP49{r}");
+    println!("    {y}{b}[4]{r}  {w}All types / 全部生成{r}");
+    println!("    {d}[0]  Back 返回{r}");
+    println!();
+    print!("  {y}{b}> {r}");
+    io::stdout().flush().unwrap();
+
+    let choice = read_line().trim().to_string();
+    let addr_type = match choice.as_str() {
+        "1" => "taproot",
+        "2" => "native_segwit",
+        "3" => "nested_segwit",
+        "4" => "all",
+        _ => return,
+    };
+
+    println!();
+    print!("  Wallet name / 钱包名称: ");
+    io::stdout().flush().unwrap();
+    let wallet_name = read_line().trim().to_string();
+    let wallet_name = if wallet_name.is_empty() { "nexus_wallet".to_string() } else { wallet_name };
+
+    println!();
+    println!("  Generating wallet... / 正在生成钱包...");
+    println!();
+
+    // 调用Python生成钱包
+    let output = Command::new("python3")
+        .arg("scripts/wallet_gen.py")
+        .arg(addr_type)
+        .output();
+
+    let output = match output {
+        Ok(o) => o,
+        Err(e) => {
+            println!("  {red}❌ Failed: {}{r}", e);
+            println!("  Install: pip install bip_utils --break-system-packages -i https://pypi.org/simple/");
+            return;
+        }
+    };
+
+    if !output.status.success() {
+        let err = String::from_utf8_lossy(&output.stderr);
+        println!("  {red}❌ Generation failed: {}{r}", err);
+        println!("  Install: pip install bip_utils --break-system-packages -i https://pypi.org/simple/");
+        return;
+    }
+
+    let json_str = String::from_utf8_lossy(&output.stdout);
+    let data: serde_json::Value = match serde_json::from_str(&json_str) {
+        Ok(v) => v,
+        Err(e) => {
+            println!("  {red}❌ Parse error: {}{r}", e);
+            println!("  Raw: {}", json_str);
+            return;
+        }
+    };
+
+    // 检查是否有error
+    if let Some(err) = data["error"].as_str() {
+        println!("  {red}❌ {}{r}", err);
+        return;
+    }
+
+    let mnemonic = data["mnemonic"].as_str().unwrap_or("?");
+    let addresses = &data["addresses"];
+
+    // 显示结果
+    println!("  {g}{b}╔════════════════════════════════════════════════════════════╗{r}");
+    println!("  {g}{b}║  Wallet Created / 钱包已创建                              ║{r}");
+    println!("  {g}{b}╚════════════════════════════════════════════════════════════╝{r}");
+    println!();
+    println!("  {w}{b}Name / 名称:{r}  {c}{}{r}", wallet_name);
+    println!();
+
+    println!("  {red}{b}╔════════════════════════════════════════════════════════════╗{r}");
+    println!("  {red}{b}║  ⚠ SAVE THIS! NEVER SHARE! / 请保存! 不要分享!            ║{r}");
+    println!("  {red}{b}╚════════════════════════════════════════════════════════════╝{r}");
+    println!();
+    println!("  {w}{b}Mnemonic / 助记词 (12 words):{r}");
+    println!("  {y}{b}{}{r}", mnemonic);
+    println!();
+
+    // 收集要导入Bitcoin Core的WIF
+    let mut import_wifs: Vec<(String, String)> = Vec::new(); // (wif, addr_type_name)
+
+    if let Some(taproot) = addresses.get("taproot") {
+        let addr = taproot["address"].as_str().unwrap_or("?");
+        let wif = taproot["wif"].as_str().unwrap_or("?");
+        println!("  {c}{b}── Taproot (P2TR) ──{r}  {d}{}{r}", taproot["path"].as_str().unwrap_or(""));
+        println!("  {w}Address:{r} {g}{b}{}{r}", addr);
+        println!("  {w}WIF Key:{r} {y}{}{r}", wif);
+        println!();
+        import_wifs.push((wif.to_string(), "tr".to_string()));
+    }
+
+    if let Some(native) = addresses.get("native_segwit") {
+        let addr = native["address"].as_str().unwrap_or("?");
+        let wif = native["wif"].as_str().unwrap_or("?");
+        println!("  {c}{b}── Native SegWit (P2WPKH) ──{r}  {d}{}{r}", native["path"].as_str().unwrap_or(""));
+        println!("  {w}Address:{r} {g}{b}{}{r}", addr);
+        println!("  {w}WIF Key:{r} {y}{}{r}", wif);
+        println!();
+        import_wifs.push((wif.to_string(), "wpkh".to_string()));
+    }
+
+    if let Some(nested) = addresses.get("nested_segwit") {
+        let addr = nested["address"].as_str().unwrap_or("?");
+        let wif = nested["wif"].as_str().unwrap_or("?");
+        println!("  {c}{b}── Nested SegWit (P2SH-P2WPKH) ──{r}  {d}{}{r}", nested["path"].as_str().unwrap_or(""));
+        println!("  {w}Address:{r} {g}{b}{}{r}", addr);
+        println!("  {w}WIF Key:{r} {y}{}{r}", wif);
+        println!();
+        import_wifs.push((wif.to_string(), "sh(wpkh".to_string()));
+    }
+
+    // 保存到文件
+    let wallet_file = format!("{}_wallet.json", wallet_name);
+    let save_data = serde_json::json!({
+        "name": wallet_name,
+        "mnemonic": mnemonic,
+        "addresses": addresses,
+    });
+    if let Ok(j) = serde_json::to_string_pretty(&save_data) {
+        std::fs::write(&wallet_file, &j).ok();
+        println!("  {d}Saved to / 已保存到: {wallet_file}{r}");
+        println!("  {red}{b}Delete this file after backing up! / 备份后请删除此文件!{r}");
+    }
+    println!();
+
+    // 导入Bitcoin Core
+    println!("  {c}{b}── Importing to Bitcoin Core / 导入全节点 ──{r}");
+
+    // 先创建钱包（如果不存在）
+    let create_result = btc_cli_output(
+        &["createwallet", &wallet_name, "false", "false", "", "false", "true", "true"],
+        false,
+    );
+    if create_result.contains("error") && !create_result.contains("already exists") {
+        // 钱包可能已存在，尝试加载
+        let _ = btc_cli_output(&["loadwallet", &wallet_name], false);
+    }
+
+    // 导入每个私钥
+    let mut imported = 0;
+    for (wif, desc_type) in &import_wifs {
+        let desc = if desc_type == "tr" {
+            format!("tr({})", wif)
+        } else if desc_type.starts_with("sh(wpkh") {
+            format!("sh(wpkh({}))", wif)
+        } else {
+            format!("wpkh({})", wif)
+        };
+
+        // 获取checksum
+        let desc_info = btc_cli_output(
+            &[&format!("-rpcwallet={}", wallet_name), "getdescriptorinfo", &desc],
+            false,
+        );
+        let checksum = serde_json::from_str::<serde_json::Value>(&desc_info)
+            .ok()
+            .and_then(|v| v["checksum"].as_str().map(|s| s.to_string()))
+            .unwrap_or_default();
+
+        if checksum.is_empty() {
+            println!("  {y}⚠ Could not get checksum for {}{r}", desc_type);
+            continue;
+        }
+
+        let import_json = format!(
+            "[{{\"desc\": \"{}#{}\", \"timestamp\": \"now\", \"active\": false}}]",
+            desc, checksum
+        );
+        let result = btc_cli_output(
+            &[&format!("-rpcwallet={}", wallet_name), "importdescriptors", &import_json],
+            false,
+        );
+
+        if !result.contains("error") || result.contains("\"success\": true") {
+            imported += 1;
+            println!("  {g}✓ Imported {} key{r}", desc_type);
+        } else {
+            println!("  {y}⚠ Failed to import {}: {}{r}", desc_type, result.trim());
+        }
+    }
+
+    if imported > 0 {
+        println!();
+        println!("  {g}{b}✓ Wallet imported to Bitcoin Core!{r}");
+        println!("  {d}Wallet name: {}{r}", wallet_name);
+        println!("  {d}Use [5] Wallet Info to check balance{r}");
+    } else {
+        println!();
+        println!("  {y}⚠ Could not import to Bitcoin Core (node may not be running){r}");
+        println!("  {d}You can still use [4] Mainnet Mint with the WIF key directly{r}");
+    }
+
+    println!();
+
+    // 铸造提示
+    if addresses.get("taproot").is_some() {
+        let addr = addresses["taproot"]["address"].as_str().unwrap_or("");
+        println!("  {c}{b}── Ready to Mint / 准备铸造 ──{r}");
+        println!("  {w}1. Send BTC to your Taproot address / 向Taproot地址充值:{r}");
+        println!("     {g}{b}{}{r}", addr);
+        println!("  {w}2. Need at least ~10,000 sats (5,000 fee + miner gas){r}");
+        println!("  {w}3. Use [4] Mainnet Mint with your WIF key / 用[4]铸造{r}");
     }
 }
 
@@ -565,7 +868,7 @@ fn menu_mainnet_mint() {
 fn menu_wallet_info() {
     ui::sub_menu_wallet();
 
-    let (is_regtest, rpc_port) = match read_line().trim() {
+    let (is_regtest, _rpc_port) = match read_line().trim() {
         "1" => (true, "18443"),
         "2" => (false, "8332"),
         _ => return,
@@ -573,39 +876,72 @@ fn menu_wallet_info() {
 
     println!("");
 
-    // 余额
-    let balance = if is_regtest {
-        btc_cli_output(&["getbalance"], true)
-    } else {
-        btc_cli_output(&["getbalance"], false)
-    };
-
-    if balance.contains("error") || balance.is_empty() {
-        println!("  ❌ 无法连接节点");
+    // 列出所有钱包
+    let wallets_json = btc_cli_output(&["listwallets"], is_regtest);
+    if wallets_json.contains("error") {
+        println!("  ❌ Cannot connect to node / 无法连接节点");
         return;
     }
 
-    println!("  💰 BTC余额: {} BTC", balance.trim());
+    let wallets: Vec<String> = serde_json::from_str::<serde_json::Value>(&wallets_json)
+        .ok()
+        .and_then(|v| v.as_array().map(|a| {
+            a.iter().filter_map(|w| w.as_str().map(|s| s.to_string())).collect()
+        }))
+        .unwrap_or_default();
+
+    if wallets.is_empty() {
+        println!("  No wallets found / 未找到钱包");
+        println!("  Use [6] to create a wallet / 用[6]创建钱包");
+        return;
+    }
+
+    println!("  Wallets / 钱包列表:");
+    for (i, w) in wallets.iter().enumerate() {
+        println!("    [{}] {}", i + 1, w);
+    }
+    println!();
+    print!("  Select wallet / 选择钱包 (number): ");
+    io::stdout().flush().unwrap();
+    let sel: usize = read_line().trim().parse().unwrap_or(1);
+    let wallet_name = match wallets.get(sel.saturating_sub(1)) {
+        Some(w) => w.clone(),
+        None => { println!("  Invalid selection"); return; }
+    };
+
+    println!("");
+
+    // 余额
+    let balance = btc_cli_output(
+        &[&format!("-rpcwallet={}", wallet_name), "getbalance"],
+        is_regtest,
+    );
+
+    if balance.contains("error") || balance.is_empty() {
+        println!("  ❌ Cannot get balance for wallet: {}", wallet_name);
+        return;
+    }
+
+    println!("  💰 Wallet: {}", wallet_name);
+    println!("  💰 BTC Balance: {} BTC", balance.trim());
 
     // UTXO列表
-    let utxo_json = if is_regtest {
-        btc_cli_output(&["listunspent"], true)
-    } else {
-        btc_cli_output(&["listunspent"], false)
-    };
+    let utxo_json = btc_cli_output(
+        &[&format!("-rpcwallet={}", wallet_name), "listunspent"],
+        is_regtest,
+    );
 
     if let Ok(utxos) = serde_json::from_str::<serde_json::Value>(&utxo_json) {
         if let Some(arr) = utxos.as_array() {
-            println!("  📦 UTXO数量: {}", arr.len());
+            println!("  📦 UTXOs: {}", arr.len());
             println!("");
 
             let total_sats: f64 = arr.iter()
                 .map(|u| u["amount"].as_f64().unwrap_or(0.0))
                 .sum();
-            println!("  总计: {:.8} BTC ({} sats)", total_sats, (total_sats * 1e8) as u64);
+            println!("  Total: {:.8} BTC ({} sats)", total_sats, (total_sats * 1e8) as u64);
             println!("");
 
-            // 显示前10个UTXO
             let show = arr.len().min(10);
             for (i, utxo) in arr.iter().take(show).enumerate() {
                 let txid = utxo["txid"].as_str().unwrap_or("?");
@@ -613,43 +949,33 @@ fn menu_wallet_info() {
                 let amount = utxo["amount"].as_f64().unwrap_or(0.0);
                 let confirms = utxo["confirmations"].as_u64().unwrap_or(0);
                 let addr = utxo["address"].as_str().unwrap_or("?");
-                println!("  [{}] {}...:{} | {:.8} BTC | {} confirms",
-                    i + 1, &txid[..16], vout, amount, confirms);
+                println!("  [{}] {}:{} | {:.8} BTC | {} confirms",
+                    i + 1, txid, vout, amount, confirms);
                 println!("       {}", addr);
             }
             if arr.len() > 10 {
-                println!("  ... 还有 {} 个UTXO未显示", arr.len() - 10);
+                println!("  ... {} more UTXOs", arr.len() - 10);
             }
         }
     }
 
-    // NEXUS代币余额 (查询Indexer)
+    // NEXUS代币余额
     println!("");
-    println!("  ── NEXUS代币 ──");
-
-    let indexer_url = if is_regtest {
-        "http://127.0.0.1:3000"
-    } else {
-        "http://127.0.0.1:3000"
-    };
-
+    println!("  ── NEXUS Token ──");
     let client = reqwest::blocking::Client::new();
-    match client.get(&format!("{}/status", indexer_url)).send() {
+    match client.get("http://127.0.0.1:3000/status").send() {
         Ok(resp) => {
             if let Ok(status) = resp.json::<serde_json::Value>() {
                 let minted = status["minted"].as_u64().unwrap_or(0);
-                let total = status["total_supply"].as_u64().unwrap_or(MAX_SUPPLY);
                 let next_seq = status["next_seq"].as_u64().unwrap_or(1);
                 let remaining = TOTAL_MINTS as u64 - (next_seq - 1);
-
-                println!("  铸造进度: {}/{} NXS", minted / 100000000, total / 100000000);
-                println!("  已铸造笔数: {}/{}", next_seq - 1, TOTAL_MINTS);
-                println!("  剩余: {} 笔", remaining);
+                println!("  Minted: {} / {} NXS", minted, MAX_SUPPLY);
+                println!("  Mints done: {} / {}", next_seq - 1, TOTAL_MINTS);
+                println!("  Remaining: {}", remaining);
             }
         }
         Err(_) => {
-            println!("  ⚠️  Indexer未运行, 无法查询NEXUS代币余额");
-            println!("     Indexer启动后将在此显示代币信息");
+            println!("  ⚠️  Indexer not running / Indexer未运行");
         }
     }
 }
@@ -664,14 +990,13 @@ fn execute_mint(
     rpc_user: &str,
     rpc_pass: &str,
     privkey_wif: &str,
-    fee_rate: u64,
+    fee_rate: f64,
     network: Network,
 ) -> Result<(String, String), String> {
     let secp = Secp256k1::new();
 
-    // 解析私钥
     let privkey = PrivateKey::from_wif(privkey_wif)
-        .map_err(|e| format!("私钥WIF格式无效: {}", e))?;
+        .map_err(|e| format!("Invalid WIF: {}", e))?;
     let secret_key = privkey.inner;
     let keypair = bitcoin::secp256k1::Keypair::from_secret_key(&secp, &secret_key);
     let (x_only_pubkey, _) = keypair.x_only_public_key();
@@ -679,21 +1004,18 @@ fn execute_mint(
     let pubkey = PublicKey::from_private_key(&secp, &privkey);
     let minter_address = Address::p2tr(&secp, internal_key, None, network);
 
-    println!("    地址: {}", minter_address);
+    println!("    Address: {}", minter_address);
 
-    // 查询铸造进度
     let next_seq = query_indexer_seq();
     if next_seq > TOTAL_MINTS {
-        return Err("铸造已结束，42,000笔全部完成".into());
+        return Err("Minting ended / 铸造已结束".into());
     }
-    println!("    进度: {} / {} mints remaining", TOTAL_MINTS - next_seq + 1, TOTAL_MINTS);
+    println!("    Progress: {} / {} remaining", TOTAL_MINTS - next_seq + 1, TOTAL_MINTS);
 
-    // 获取最新区块
     let (block_hash_hex, block_height) = get_latest_block(rpc_url, rpc_user, rpc_pass)?;
-    println!("    区块: {} ({})", block_height, &block_hash_hex[..12]);
+    println!("    Block: {} ({})", block_height, &block_hash_hex[..12]);
 
-    // 生成全节点证明
-    print!("    生成证明... ");
+    print!("    Generating proof... ");
     io::stdout().flush().unwrap();
 
     let block_hash_bytes: [u8; 32] = hex::decode(&block_hash_hex)
@@ -710,15 +1032,13 @@ fn execute_mint(
 
     let two_round = proof::generate_proof(
         &block_hash_bytes, &block_hash_hex, block_height, &pubkey_bytes, &get_raw,
-    ).map_err(|e| format!("证明生成失败: {}", e))?;
+    ).map_err(|e| format!("Proof failed: {}", e))?;
     println!("✅ ({}s)", two_round.round2_ts - two_round.round1_ts);
 
-    // 构造互锁
     let interlock = transaction::build_interlock(&two_round)
-        .map_err(|e| format!("互锁构造失败: {}", e))?;
-    println!("    互锁: ✅");
+        .map_err(|e| format!("Interlock failed: {}", e))?;
+    println!("    Interlock: ✅");
 
-    // 构造铭文脚本
     let inscription_script = ScriptBuilder::new()
         .push_x_only_key(&x_only_pubkey)
         .push_opcode(opcodes::all::OP_CHECKSIG)
@@ -733,37 +1053,34 @@ fn execute_mint(
         .push_opcode(opcodes::all::OP_ENDIF)
         .into_script();
 
-    // Taproot脚本树
     let taproot_builder = TaprootBuilder::new()
         .add_leaf(0, inscription_script.clone())
         .map_err(|e| format!("taproot leaf: {:?}", e))?;
 
     let spend_info = taproot_builder
         .finalize(&secp, internal_key)
-        .map_err(|_| "taproot finalize失败")?;
+        .map_err(|_| "taproot finalize failed")?;
 
     let commit_address = Address::p2tr_tweaked(spend_info.output_key(), network);
 
-    // UTXO
     let utxos = list_unspent_rpc(rpc_url, rpc_user, rpc_pass, &minter_address.to_string())?;
     if utxos.is_empty() {
-        return Err(format!("没有可用UTXO, 请先向 {} 发送BTC", minter_address));
+        return Err(format!("No UTXOs, send BTC to {}", minter_address));
     }
 
     let opreturn_script = transaction::build_opreturn_script(&interlock.opreturn_bytes);
 
     let reveal_vsize: u64 = 300 + (interlock.witness_json.len() as u64 / 4);
-    let reveal_fee = reveal_vsize * fee_rate;
+    let reveal_fee = (reveal_vsize as f64 * fee_rate).ceil() as u64;
     let commit_output_value = 330 + MINT_FEE_SATS + reveal_fee;
-    let commit_fee = 154 * fee_rate;
+    let commit_fee = (154.0 * fee_rate).ceil() as u64;
     let total_needed = commit_output_value + commit_fee;
 
     let utxo = utxos.iter().find(|u| u.2 >= total_needed)
-        .ok_or(format!("UTXO不足, 需要 {} sats", total_needed))?;
+        .ok_or(format!("UTXO insufficient, need {} sats", total_needed))?;
 
-    println!("    UTXO: {}...:{} ({} sats)", &utxo.0, utxo.1, utxo.2);
+    println!("    UTXO: {}:{} ({} sats)", &utxo.0, utxo.1, utxo.2);
 
-    // Commit交易
     let txid = Txid::from_str(&utxo.0).map_err(|e| e.to_string())?;
     let change_value = utxo.2.saturating_sub(commit_output_value + commit_fee);
 
@@ -790,7 +1107,6 @@ fn execute_mint(
         output: commit_outputs,
     };
 
-    // 签名Commit (key path, tweaked)
     {
         use bitcoin::sighash::{SighashCache, TapSighashType, Prevouts};
         let prevouts = [TxOut {
@@ -810,11 +1126,10 @@ fn execute_mint(
 
     let commit_txid = commit_tx.compute_txid();
 
-    // Reveal交易
     let fee_addr = Address::from_str(FEE_ADDRESS)
-        .map_err(|e| format!("FEE_ADDRESS无效: {}", e))?
+        .map_err(|e| format!("FEE_ADDRESS invalid: {}", e))?
         .require_network(network)
-        .map_err(|e| format!("FEE_ADDRESS网络不匹配: {}", e))?;
+        .map_err(|e| format!("FEE_ADDRESS network mismatch: {}", e))?;
 
     let mut reveal_tx = Transaction {
         version: Version::TWO,
@@ -832,7 +1147,6 @@ fn execute_mint(
         ],
     };
 
-    // 签名Reveal (script path)
     {
         use bitcoin::sighash::{SighashCache, TapSighashType, Prevouts};
         let prevouts = [TxOut {
@@ -851,7 +1165,7 @@ fn execute_mint(
         let schnorr_sig = bitcoin::taproot::Signature { signature: sig, sighash_type: TapSighashType::Default };
         let control_block = spend_info
             .control_block(&(inscription_script.clone(), LeafVersion::TapScript))
-            .ok_or("control block失败")?;
+            .ok_or("control block failed")?;
         let mut witness = Witness::new();
         witness.push(schnorr_sig.to_vec());
         witness.push(inscription_script.as_bytes());
@@ -861,13 +1175,12 @@ fn execute_mint(
 
     let reveal_txid = reveal_tx.compute_txid();
 
-    // 广播
-    print!("    广播Commit... ");
+    print!("    Broadcasting Commit... ");
     io::stdout().flush().unwrap();
     broadcast(rpc_url, rpc_user, rpc_pass, &commit_tx)?;
     println!("✅ {}", commit_txid);
 
-    print!("    广播Reveal... ");
+    print!("    Broadcasting Reveal... ");
     io::stdout().flush().unwrap();
     broadcast(rpc_url, rpc_user, rpc_pass, &reveal_tx)?;
     println!("✅ {}", reveal_txid);
@@ -892,32 +1205,6 @@ fn expand_home(path: &str) -> String {
         }
     }
     path.to_string()
-}
-
-fn btc_cli(args: &[&str], regtest: bool) -> bool {
-    let output = btc_cli_output(args, regtest);
-    !output.contains("error")
-}
-
-fn btc_cli_output(args: &[&str], regtest: bool) -> String {
-    let mut cmd = Command::new("bitcoin-cli");
-    if regtest {
-        cmd.arg("-regtest");
-    }
-    cmd.args(["-rpcuser=nexus", "-rpcpassword=nexustest123"]);
-    cmd.args(args);
-
-    match cmd.output() {
-        Ok(o) => {
-            let stdout = String::from_utf8_lossy(&o.stdout).to_string();
-            let stderr = String::from_utf8_lossy(&o.stderr).to_string();
-            if !stderr.is_empty() && stdout.is_empty() {
-                return format!("error: {}", stderr);
-            }
-            stdout
-        }
-        Err(e) => format!("error: {}", e),
-    }
 }
 
 fn get_latest_block(rpc_url: &str, user: &str, pass: &str) -> Result<(String, u32), String> {
