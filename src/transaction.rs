@@ -21,6 +21,7 @@ pub struct WitnessPayload {
     pub p: String,        // "nexus"
     pub op: String,       // "mint"
     pub amt: u64,         // 500
+    pub pk: String,       // minter x-only pubkey (64 hex)
     pub fnp: String,      // combined proof hash (full 64 hex)
     pub opr: String,      // SHA256(OP_RETURN bytes) (full 64 hex)
 }
@@ -103,7 +104,7 @@ pub struct InterlockResult {
 /// 1. 先构造witness(opr=""), 算其hash → 写入opreturn
 /// 2. 构造完整opreturn, 算其hash → 写入witness.opr
 /// 验证时: 将witness.opr替换为""再算hash, 与opreturn中的前缀比对
-pub fn build_interlock(proof: &TwoRoundProof) -> Result<InterlockResult, String> {
+pub fn build_interlock(proof: &TwoRoundProof, pubkey_hex: &str) -> Result<InterlockResult, String> {
     let proof_bytes: [u8; 32] = hex::decode(&proof.combined)
         .map_err(|e| e.to_string())?.try_into().map_err(|_| "len")?;
 
@@ -112,6 +113,7 @@ pub fn build_interlock(proof: &TwoRoundProof) -> Result<InterlockResult, String>
         p: "nexus".into(),
         op: "mint".into(),
         amt: MINT_AMOUNT,
+        pk: pubkey_hex.to_string(),
         fnp: proof.combined.clone(),
         opr: String::new(),
     };
@@ -135,6 +137,7 @@ pub fn build_interlock(proof: &TwoRoundProof) -> Result<InterlockResult, String>
         p: "nexus".into(),
         op: "mint".into(),
         amt: MINT_AMOUNT,
+        pk: pubkey_hex.to_string(),
         fnp: proof.combined.clone(),
         opr: hex::encode(opr_hash),
     };
@@ -170,6 +173,7 @@ pub fn verify_interlock(witness_json: &str, opreturn_bytes: &[u8]) -> Result<(),
         p: wit.p.clone(),
         op: wit.op.clone(),
         amt: wit.amt,
+        pk: wit.pk.clone(),
         fnp: wit.fnp.clone(),
         opr: String::new(),
     };
@@ -242,13 +246,13 @@ mod tests {
 
     #[test]
     fn interlock_builds_and_verifies() {
-        let result = build_interlock(&mock_proof()).unwrap();
+        let result = build_interlock(&mock_proof(), &hex::encode([0x02u8; 32])).unwrap();
         assert!(verify_interlock(&result.witness_json, &result.opreturn_bytes).is_ok());
     }
 
     #[test]
     fn interlock_detects_tamper() {
-        let result = build_interlock(&mock_proof()).unwrap();
+        let result = build_interlock(&mock_proof(), &hex::encode([0x02u8; 32])).unwrap();
         let mut bad = result.opreturn_bytes.clone();
         *bad.last_mut().unwrap() ^= 0xFF;
         assert!(verify_interlock(&result.witness_json, &bad).is_err());
