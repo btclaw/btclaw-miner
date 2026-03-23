@@ -1,6 +1,10 @@
 /// NEXUS 双层互锁交易构造
 ///
 /// Witness层(铭文) ←→ OP_RETURN层 互相包含对方的SHA256
+///
+/// OP_RETURN格式 (v2 可读ASCII):
+///   NXS:1:w=<16 hex>:p=<16 hex>
+///   约43字节，区块浏览器直接可读
 
 use sha2::{Sha256, Digest};
 use serde::{Serialize, Deserialize};
@@ -17,38 +21,65 @@ pub struct WitnessPayload {
     pub p: String,        // "nexus"
     pub op: String,       // "mint"
     pub amt: u64,         // 500
-    pub fnp: String,      // combined proof hash
-    pub opr: String,      // SHA256(OP_RETURN bytes)
+    pub fnp: String,      // combined proof hash (full 64 hex)
+    pub opr: String,      // SHA256(OP_RETURN bytes) (full 64 hex)
 }
 
-/// OP_RETURN二进制结构 (共71字节)
-/// "NXS"(3) + version(1) + seq(4) + witness_hash(32) + proof(32) - 1 = 72B
+/// OP_RETURN数据 (ASCII可读格式)
+///
+/// 格式: NXS:1:w=<witness_hash前16hex>:p=<proof_hash前16hex>
+/// 例如: NXS:1:w=e2fa8baedf7b7a13:p=ea3af2ee3ac4bdd1
+///
+/// 完整hash在Witness JSON铭文层中，OP_RETURN做可读标识
 #[derive(Debug, Clone)]
 pub struct OpReturnData {
-    pub magic: [u8; 3],            // "NXS"
-    pub version: u8,               // 0x01
-    pub witness_hash: [u8; 32],    // SHA256(witness JSON)
-    pub proof_hash: [u8; 32],      // combined proof
+    pub magic: String,              // "NXS"
+    pub version: u8,                // 1
+    pub witness_hash_short: String, // 前16 hex字符 (8字节)
+    pub proof_hash_short: String,   // 前16 hex字符 (8字节)
+    // 用于互锁验证的完整hash（不写入OP_RETURN，仅内部使用）
+    pub witness_hash_full: [u8; 32],
+    pub proof_hash_full: [u8; 32],
 }
 
 impl OpReturnData {
+    /// 序列化为ASCII可读格式
+    /// 输出: NXS:1:w=abcdef0123456789:p=fedcba9876543210
     pub fn to_bytes(&self) -> Vec<u8> {
-        let mut b = Vec::with_capacity(68);
-        b.extend_from_slice(&self.magic);          // 3
-        b.push(self.version);                       // 1
-        b.extend_from_slice(&self.witness_hash);    // 32
-        b.extend_from_slice(&self.proof_hash);      // 32
-        b                                           // total: 68
+        let text = format!("NXS:{}:w={}:p={}",
+            self.version,
+            self.witness_hash_short,
+            self.proof_hash_short,
+        );
+        text.into_bytes()
     }
 
+    /// 从ASCII文本解析
     pub fn from_bytes(d: &[u8]) -> Option<Self> {
-        if d.len() < 68 { return None; }
-        if &d[0..3] != b"NXS" { return None; }
+        let text = std::str::from_utf8(d).ok()?;
+        if !text.starts_with("NXS:") { return None; }
+
+        let parts: Vec<&str> = text.split(':').collect();
+        if parts.len() < 4 { return None; }
+
+        // parts[0] = "NXS"
+        // parts[1] = version (e.g. "1")
+        // parts[2] = "w=<16hex>"
+        // parts[3] = "p=<16hex>"
+
+        let version: u8 = parts[1].parse().ok()?;
+        let wit_hash = parts[2].strip_prefix("w=")?;
+        let proof_hash = parts[3].strip_prefix("p=")?;
+
+        if wit_hash.len() != 16 || proof_hash.len() != 16 { return None; }
+
         Some(Self {
-            magic: [d[0], d[1], d[2]],
-            version: d[3],
-            witness_hash: d[4..36].try_into().ok()?,
-            proof_hash: d[36..68].try_into().ok()?,
+            magic: "NXS".into(),
+            version,
+            witness_hash_short: wit_hash.to_string(),
+            proof_hash_short: proof_hash.to_string(),
+            witness_hash_full: [0u8; 32], // 解析时无完整hash
+            proof_hash_full: [0u8; 32],
         })
     }
 }
@@ -68,18 +99,13 @@ pub struct InterlockResult {
 
 /// 构造双层互锁数据
 ///
-/// 鸡生蛋问题的解法: 迭代求固定点
-/// - witness.opr = SHA256(opreturn)
-/// - opreturn.witness_hash = SHA256(witness_json)
-/// 迭代2-3次必然收敛
+/// 单向确定方案 (不需要迭代):
+/// 1. 先构造witness(opr=""), 算其hash → 写入opreturn
+/// 2. 构造完整opreturn, 算其hash → 写入witness.opr
+/// 验证时: 将witness.opr替换为""再算hash, 与opreturn中的前缀比对
 pub fn build_interlock(proof: &TwoRoundProof) -> Result<InterlockResult, String> {
     let proof_bytes: [u8; 32] = hex::decode(&proof.combined)
         .map_err(|e| e.to_string())?.try_into().map_err(|_| "len")?;
-
-    // 单向确定方案 (不需要迭代):
-    // 1. 先构造witness(opr=""), 算其hash → 写入opreturn.witness_hash
-    // 2. 构造完整opreturn, 算其hash → 写入witness.opr
-    // 验证时: 验证者将witness.opr替换为""再算hash, 与opreturn.witness_hash比对
 
     // Step 1: witness with empty opr
     let wit_core = WitnessPayload {
@@ -92,12 +118,14 @@ pub fn build_interlock(proof: &TwoRoundProof) -> Result<InterlockResult, String>
     let wit_core_json = serde_json::to_string(&wit_core).map_err(|e| e.to_string())?;
     let wit_core_hash: [u8; 32] = Sha256::digest(wit_core_json.as_bytes()).into();
 
-    // Step 2: opreturn with witness_core_hash
+    // Step 2: opreturn with witness_core_hash (ASCII可读格式)
     let opr = OpReturnData {
-        magic: *MAGIC,
+        magic: "NXS".into(),
         version: VERSION,
-        witness_hash: wit_core_hash,
-        proof_hash: proof_bytes,
+        witness_hash_short: hex::encode(&wit_core_hash[..8]), // 前8字节 = 16 hex
+        proof_hash_short: hex::encode(&proof_bytes[..8]),      // 前8字节 = 16 hex
+        witness_hash_full: wit_core_hash,
+        proof_hash_full: proof_bytes,
     };
     let opr_bytes = opr.to_bytes();
     let opr_hash: [u8; 32] = Sha256::digest(&opr_bytes).into();
@@ -137,8 +165,7 @@ pub fn verify_interlock(witness_json: &str, opreturn_bytes: &[u8]) -> Result<(),
         return Err("witness→opreturn hash不匹配".into());
     }
 
-    // 验证 opreturn.witness_hash → witness_core (反向)
-    // witness_core = witness with opr="" 
+    // 验证 opreturn.witness_hash_short → witness_core (反向, 前缀匹配)
     let wit_core = WitnessPayload {
         p: wit.p.clone(),
         op: wit.op.clone(),
@@ -149,15 +176,19 @@ pub fn verify_interlock(witness_json: &str, opreturn_bytes: &[u8]) -> Result<(),
     let wit_core_json = serde_json::to_string(&wit_core)
         .map_err(|e| format!("序列化失败: {}", e))?;
     let wit_core_hash: [u8; 32] = Sha256::digest(wit_core_json.as_bytes()).into();
-    if opr.witness_hash != wit_core_hash {
-        return Err("opreturn→witness hash不匹配".into());
+    let wit_core_hash_short = hex::encode(&wit_core_hash[..8]);
+    if opr.witness_hash_short != wit_core_hash_short {
+        return Err("opreturn→witness hash前缀不匹配".into());
+    }
+
+    // proof hash前缀验证
+    let fnp_bytes = hex::decode(&wit.fnp).map_err(|e| e.to_string())?;
+    let proof_short = hex::encode(&fnp_bytes[..8]);
+    if opr.proof_hash_short != proof_short {
+        return Err("proof hash前缀不匹配".into());
     }
 
     // 字段一致性
-
-    let fnp_bytes = hex::decode(&wit.fnp).map_err(|e| e.to_string())?;
-    if fnp_bytes != opr.proof_hash { return Err("proof不一致".into()); }
-
     if wit.p != "nexus" { return Err("协议标识错误".into()); }
     if wit.op != "mint" { return Err("操作类型错误".into()); }
     if wit.amt != MINT_AMOUNT { return Err(format!("金额错误: {}", wit.amt)); }
@@ -168,20 +199,6 @@ pub fn verify_interlock(witness_json: &str, opreturn_bytes: &[u8]) -> Result<(),
 // ═══════════════════════════════════════════
 //  Bitcoin脚本构造辅助
 // ═══════════════════════════════════════════
-
-/// 构造Witness铭文envelope字节
-pub fn build_inscription_script(payload_json: &str) -> Vec<u8> {
-    let mut s = Vec::new();
-    s.push(0x00); // OP_FALSE
-    s.push(0x63); // OP_IF
-    push_data(&mut s, b"nexus");
-    s.push(0x01); s.push(0x01); // content-type tag
-    push_data(&mut s, b"application/nexus-mint");
-    s.push(0x01); s.push(0x00); // body separator
-    push_data(&mut s, payload_json.as_bytes());
-    s.push(0x68); // OP_ENDIF
-    s
-}
 
 /// 构造OP_RETURN脚本
 pub fn build_opreturn_script(data: &[u8]) -> Vec<u8> {
@@ -238,13 +255,30 @@ mod tests {
     }
 
     #[test]
-    fn opreturn_roundtrip() {
+    fn opreturn_ascii_readable() {
         let opr = OpReturnData {
-            magic: *b"NXS", version: 1,
-            witness_hash: [0xAA; 32], proof_hash: [0xBB; 32],
+            magic: "NXS".into(),
+            version: 1,
+            witness_hash_short: "e2fa8baedf7b7a13".into(),
+            proof_hash_short: "ea3af2ee3ac4bdd1".into(),
+            witness_hash_full: [0; 32],
+            proof_hash_full: [0; 32],
         };
         let bytes = opr.to_bytes();
+        let text = String::from_utf8(bytes.clone()).unwrap();
+        assert_eq!(text, "NXS:1:w=e2fa8baedf7b7a13:p=ea3af2ee3ac4bdd1");
+        assert!(text.len() < 80); // within OP_RETURN limit
+
+        // roundtrip
         let parsed = OpReturnData::from_bytes(&bytes).unwrap();
-        assert_eq!(parsed.witness_hash, [0xAA; 32]);
+        assert_eq!(parsed.version, 1);
+        assert_eq!(parsed.witness_hash_short, "e2fa8baedf7b7a13");
+        assert_eq!(parsed.proof_hash_short, "ea3af2ee3ac4bdd1");
+    }
+
+    #[test]
+    fn opreturn_rejects_invalid() {
+        assert!(OpReturnData::from_bytes(b"BTC:1:w=abc:p=def").is_none());
+        assert!(OpReturnData::from_bytes(b"NXS").is_none());
     }
 }
