@@ -1079,7 +1079,8 @@ fn execute_mint(
     ).map_err(|e| format!("Proof failed: {}", e))?;
     println!("✅ ({}s)", two_round.round2_ts - two_round.round1_ts);
 
-    let interlock = transaction::build_interlock(&two_round)
+    let pubkey_hex = hex::encode(x_only_pubkey.serialize());
+    let interlock = transaction::build_interlock(&two_round, &pubkey_hex)
         .map_err(|e| format!("Interlock failed: {}", e))?;
     println!("    Interlock: ✅");
 
