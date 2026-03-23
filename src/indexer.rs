@@ -109,7 +109,7 @@ impl Indexer {
             .ok_or("缺少OP_RETURN数据")?;
         let opr = OpReturnData::from_bytes(opr_bytes)
             .ok_or("OP_RETURN格式无效")?;
-        if &opr.magic != MAGIC { return Err("魔术数错误".into()); }
+        if opr.magic != "NXS" { return Err("魔术数错误".into()); }
         if opr.version != VERSION { return Err(format!("版本号错误: {}", opr.version)); }
 
         // ═══ 规则3: 双层互锁 ═══
