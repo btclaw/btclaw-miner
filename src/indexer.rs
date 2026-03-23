@@ -112,25 +112,50 @@ impl Indexer {
         if opr.magic != "NXS" { return Err("魔术数错误".into()); }
         if opr.version != VERSION { return Err(format!("版本号错误: {}", opr.version)); }
 
-        // ═══ 规则3: 双层互锁 ═══
-        verify_interlock(witness_json, opr_bytes)?;
-
-        // ═══ 规则4: 全节点证明 ═══
-        let proof = tx.proof.as_ref()
-            .ok_or("缺少全节点证明")?;
-        // 防重放
-        if self.used_proofs.contains_key(&proof.combined) {
-            return Err("该全节点证明已被使用 (重放攻击)".into());
-        }
-        verify_proof(proof, get_raw_block)?;
-
-        // ═══ 规则5: 铸造费 ═══
+        // ═══ 规则5: 铸造费 (轻量，前置防DoS) ═══
         if !tx.fee_output_valid {
             return Err(format!(
                 "铸造费无效: 需向 {} 支付 {} sats",
                 FEE_ADDRESS, MINT_FEE_SATS
             ));
         }
+
+        // ═══ 规则3: 双层互锁 ═══
+        verify_interlock(witness_json, opr_bytes)?;
+
+        // ═══ 规则3.5: 身份绑定 — pk必须匹配交易签名公钥 ═══
+        if wit.pk.is_empty() {
+            return Err("缺少公钥字段pk".into());
+        }
+        if let Some(ref tx_pubkey) = tx.tx_pubkey {
+            if wit.pk != *tx_pubkey {
+                return Err(format!(
+                    "公钥不匹配: JSON pk={} vs tx pubkey={}",
+                    wit.pk, tx_pubkey
+                ));
+            }
+        }
+
+        // ═══ 规则4: 全节点证明 (最昂贵，放最后) ═══
+        let proof = tx.proof.as_ref()
+            .ok_or("缺少全节点证明")?;
+        // 4a. 轻量预检查 (防DoS)
+        if proof.round1_heights.len() != CHALLENGES_PER_ROUND
+            || proof.round2_heights.len() != CHALLENGES_PER_ROUND {
+            return Err("proof轮次数量异常".into());
+        }
+        if proof.round2_ts.saturating_sub(proof.round1_ts) > MAX_ROUND_GAP_SECS {
+            return Err(format!("proof时间差{}s超限", proof.round2_ts - proof.round1_ts));
+        }
+        if proof.combined.len() != 64 || proof.pubkey.len() != 66 {
+            return Err("proof字段长度异常".into());
+        }
+        // 4b. 防重放
+        if self.used_proofs.contains_key(&proof.combined) {
+            return Err("该全节点证明已被使用 (重放攻击)".into());
+        }
+        // 4c. 完整验证
+        verify_proof(proof, get_raw_block)?;
 
         // ═══ 全部通过 ═══
         Ok(MintRecord {
@@ -195,6 +220,7 @@ pub struct CandidateTx {
     pub opreturn_bytes: Option<Vec<u8>>,
     pub proof: Option<TwoRoundProof>,
     pub fee_output_valid: bool,
+    pub tx_pubkey: Option<String>,  // Taproot witness提取的公钥
 }
 
 /// 快速筛选: 交易的OP_RETURN是否以"NXS"开头
