@@ -195,7 +195,7 @@ Mint #2: block_height - 1  (previous)   → unique seed → unique proof
 Mint #3: block_height - 2               → unique seed → unique proof
 ```
 
-Different block hashes produce entirely different challenge heights and proof outputs. The Indexer's used-proof table sees each as a distinct entry — no replay conflict. This requires no changes to the proof protocol itself.
+Different block hashes produce entirely different challenge heights and proof outputs. The Indexer's used-proof table sees each as a distinct entry — no replay conflict. 
 
 ---
 
