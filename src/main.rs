@@ -506,11 +506,12 @@ print(wif)
                                             let parts: Vec<&str> = text.split(':').collect();
                                             println!("  ┌── OP_RETURN Layer / 协议层 ──");
                                             println!("  │ Raw:         {}", text);
-                                            if parts.len() >= 4 {
+                                            if parts.len() >= 5 {
                                                 println!("  │ Magic:       NXS");
-                                                println!("  │ Version:     {}", parts[1]);
-                                                println!("  │ Wit Hash:    {}", parts[2].strip_prefix("w=").unwrap_or(parts[2]));
-                                                println!("  │ Proof Hash:  {}", parts[3].strip_prefix("p=").unwrap_or(parts[3]));
+                                                println!("  │ Operation:   {}", parts[1]);
+                                                println!("  │ Amount:      {}", parts[2]);
+                                                println!("  │ Wit Hash:    {}", parts[3].strip_prefix("w=").unwrap_or(parts[3]));
+                                                println!("  │ Proof Hash:  {}", parts[4].strip_prefix("p=").unwrap_or(parts[4]));
                                             }
                                             println!("  └────────────────────────────────");
                                         }
