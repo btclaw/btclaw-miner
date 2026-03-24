@@ -176,7 +176,7 @@ cargo build --release --features regtest
   [1]  Install / Sync Full Node
   [2]  Sync Progress
   [3]  Testnet Mint (regtest)
-  [4]  Mainnet Mint
+  [4]  Mainnet Mint (Single / Batch)
   [5]  Wallet Info
   [6]  Create Wallet
 
@@ -216,18 +216,72 @@ The wallet generates:
 
 Send at least **10,000 sats** to your Taproot address:
 - 5,000 sats → protocol mint fee
-- ~1,000 sats → miner fee (at 0.1-1 sat/vB)
+- ~20-1,000 sats → miner fee (at 0.1-1 sat/vB)
 - Remainder → returned as change
 
 ### Step 4 — Mint
 
-Select `[4]` Mainnet Mint:
+Select `[4]` Mainnet Mint, then choose:
+- **[1] Single mint** — one mint of 500 NXS
+- **[2] Batch mint** — mint multiple in one session (see Batch Minting below)
+
+For single mint:
 1. Select wallet (auto-detected from Bitcoin Core)
 2. Enter the wallet number (e.g. enter 1 for an already created wallet)
 3. Set fee rate (minimum 0.1 sat/vB)
 4. Confirm and broadcast
 
-The Reactor handles everything: node verification → proof generation → dual-layer interlock → commit + reveal broadcast.
+The Reactor handles everything: UTXO safety scan → node verification → proof generation → dual-layer interlock → commit + reveal broadcast → UTXO record update.
+
+---
+
+## UTXO Safety
+
+The Reactor protects your assets with a **five-layer UTXO classification** system. Before selecting any UTXO as a transaction input, each one is checked:
+
+| Layer | Check | Result |
+|-------|-------|--------|
+| 1 | In `nxs_mints.json` (our minted tokens) | Locked — never spend |
+| 2 | Amount ≤ 546 sats | Locked — likely carries inscription/Rune |
+| 3 | In `nxs_locked.json` (detected protocol assets) | Locked |
+| 4 | In `nxs_change.json` (our Commit TX change) | Safe to spend |
+| 5 | Amount > 1,000 sats | Safe to spend |
+| — | 547–1,000 sats | Gray zone — default locked |
+
+The Reactor also supports **multi-UTXO merge** — when no single UTXO is large enough, multiple safe UTXOs are combined as Commit TX inputs (up to 10). Change outputs are always produced when possible, eliminating wasted sats.
+
+Before every mint, a **pre-check** displays your UTXO pool status:
+```
+── UTXO Pool Status ──
+Total UTXOs:    8
+Spendable:      2 (15,000 sats)
+Locked:         5 (1,650 sats)
+Gray zone:      1 (800 sats)
+Need:           1,308 sats
+Status:         ✅ Balance sufficient
+```
+
+---
+
+## Batch Minting
+
+Mint multiple NXS tokens in a single session:
+
+1. Select `[4]` → `[2]` Batch mint
+2. Enter fee rate
+3. Reactor scans UTXOs, calculates maximum mintable count
+4. Enter how many to mint (1–N)
+5. Reactor executes N mints sequentially — each with a unique proof
+
+Each mint in a batch uses a **different block height** for proof generation (`block_height`, `block_height-1`, `block_height-2`, ...), producing completely independent proofs. Change from each Commit TX feeds directly into the next — no waiting for confirmations.
+
+```
+Mint #1 [block 942022]: 15,000 → 726 commit + 14,077 change
+Mint #2 [block 942021]: 14,077 → 726 commit + 13,154 change
+Mint #3 [block 942020]: 13,154 → 726 commit + 12,231 change
+```
+
+If any broadcast fails mid-batch, already-completed mints are preserved. The Reactor saves all UTXO records and you can restart to continue.
 
 ---
 
@@ -246,12 +300,13 @@ Try the full mint cycle in 10 minutes without real BTC:
 ```
 nexus-protocol/
 ├── src/
-│   ├── main.rs          # Reactor CLI — interactive menu + mint engine
+│   ├── main.rs          # Reactor CLI — interactive menu + single/batch mint engine
 │   ├── lib.rs           # Module exports
 │   ├── constants.rs     # Protocol parameters (mainnet/regtest via feature flag)
 │   ├── proof.rs         # Full node proof + Bitcoin Core 30.x obfuscation support
 │   ├── transaction.rs   # Dual-layer interlock + pk identity binding
 │   ├── indexer.rs       # Transaction validation engine (7 rules + DoS prefilter)
+│   ├── utxo.rs          # UTXO safety classification + selection + record tracking
 │   ├── node_detect.rs   # Auto-detect Bitcoin node + path management
 │   └── ui.rs            # Terminal UI with color
 ├── scripts/
@@ -267,6 +322,8 @@ nexus-protocol/
 
 ## Mint Transaction Flow
 
+### Single Mint
+
 ```
 [1] Verify Node     Auto-detect datadir → blk*.dat > 500GB → XOR decrypt magic ✓
          │
@@ -274,11 +331,34 @@ nexus-protocol/
          │
 [3] Build Interlock Witness JSON (with pk) ←SHA256→ OP_RETURN (ASCII)
          │
-[4] Commit TX       BTC → Taproot address with inscription script tree
+[4] UTXO Select     Load records → 5-layer classify → select + merge inputs
          │
-[5] Reveal TX       Script-path spend → inscription + OP_RETURN + fee
+[5] Commit TX       BTC → Taproot address with inscription script tree + change
          │
-[6] Confirmed       Block inclusion → Indexer validates 7 rules → 500 NXS credited
+[6] Reveal TX       Script-path spend → inscription + OP_RETURN + fee
+         │
+[7] Record UTXOs    Reveal output[0] → nxs_mints.json | Change → nxs_change.json
+         │
+[8] Confirmed       Block inclusion → Indexer validates 7 rules → 500 NXS credited
+```
+
+### Batch Mint
+
+```
+[1] Verify Node + Scan UTXOs → Calculate max mintable
+         │
+[2] User selects count (1-N)
+         │
+    ┌────┴────────────────────────────────────────────┐
+    │  FOR each mint:                                 │
+    │    Get block hash at (latest_height - i)        │
+    │    Generate unique proof → Build interlock       │
+    │    Commit TX (input = previous change) → Reveal  │
+    │    Record mint + change                          │
+    │    If broadcast fails → stop, save, report       │
+    └────┬────────────────────────────────────────────┘
+         │
+[3] Display summary (N mints, total NXS, remaining balance)
 ```
 
 ---
@@ -312,6 +392,8 @@ Sequence numbers are **assigned by the Indexer** based on transaction position w
 | Bitcoin Core 30.x encryption | Auto-detect obfuscation key, XOR decrypt blk files |
 | DoS (spam invalid proofs) | Cheap checks first (fee, format, interlock) before expensive proof verification |
 | Unlimited mint | Fixed `amt=500`, supply cap enforced, proof uniqueness |
+| Asset-bearing UTXO burn | Five-layer UTXO classification; 330/546 sats outputs locked by default |
+| Batch proof collision | Each batch mint uses a different block height → unique proof hash |
 
 ---
 
@@ -354,7 +436,13 @@ The Reactor saves settings to `nexus_config.json`:
 }
 ```
 
-Edit this file to configure RPC credentials, data directory, etc.
+UTXO tracking files (auto-generated at runtime):
+
+| File | Purpose |
+|------|---------|
+| `nxs_mints.json` | Locked token UTXOs (Reveal output[0]) |
+| `nxs_change.json` | Reusable change UTXOs (Commit change output) |
+| `nxs_locked.json` | Detected external protocol asset UTXOs |
 
 ---
 
@@ -383,6 +471,12 @@ Yes. The Reactor auto-detects the XOR obfuscation key introduced in Bitcoin Core
 
 **Q: What is the minimum fee rate?**
 0.1 sat/vB. You can set any fee rate when minting.
+
+**Q: How does batch minting work?**
+The Reactor can mint multiple NXS tokens in one session. Each mint uses a different block height for proof generation, ensuring unique proofs. Change from each Commit TX feeds into the next, enabling chain-linked minting without waiting for confirmations.
+
+**Q: Will batch minting burn my inscriptions or Runes?**
+No. The Reactor classifies every UTXO before use. Outputs ≤ 546 sats and known protocol-bound UTXOs are automatically locked and never selected as inputs.
 
 ---
 
