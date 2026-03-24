@@ -3,8 +3,8 @@
 /// Witness层(铭文) ←→ OP_RETURN层 互相包含对方的SHA256
 ///
 /// OP_RETURN格式 (v2 可读ASCII):
-///   NXS:1:w=<16 hex>:p=<16 hex>
-///   约43字节，区块浏览器直接可读
+///   NXS:MINT:500:w=<16 hex>:p=<16 hex>
+///   约50字节，区块浏览器直接可读
 
 use sha2::{Sha256, Digest};
 use serde::{Serialize, Deserialize};
@@ -28,14 +28,15 @@ pub struct WitnessPayload {
 
 /// OP_RETURN数据 (ASCII可读格式)
 ///
-/// 格式: NXS:1:w=<witness_hash前16hex>:p=<proof_hash前16hex>
-/// 例如: NXS:1:w=e2fa8baedf7b7a13:p=ea3af2ee3ac4bdd1
+/// 格式: NXS:MINT:<amt>:w=<witness_hash前16hex>:p=<proof_hash前16hex>
+/// 例如: NXS:MINT:500:w=e2fa8baedf7b7a13:p=ea3af2ee3ac4bdd1
 ///
 /// 完整hash在Witness JSON铭文层中，OP_RETURN做可读标识
 #[derive(Debug, Clone)]
 pub struct OpReturnData {
     pub magic: String,              // "NXS"
-    pub version: u8,                // 1
+    pub amt: u64,                   // 500
+    pub op: String,                 // "MINT"
     pub witness_hash_short: String, // 前16 hex字符 (8字节)
     pub proof_hash_short: String,   // 前16 hex字符 (8字节)
     // 用于互锁验证的完整hash（不写入OP_RETURN，仅内部使用）
@@ -47,8 +48,9 @@ impl OpReturnData {
     /// 序列化为ASCII可读格式
     /// 输出: NXS:1:w=abcdef0123456789:p=fedcba9876543210
     pub fn to_bytes(&self) -> Vec<u8> {
-        let text = format!("NXS:{}:w={}:p={}",
-            self.version,
+        let text = format!("NXS:{}:{}:w={}:p={}",
+            self.op,
+            self.amt,
             self.witness_hash_short,
             self.proof_hash_short,
         );
@@ -61,25 +63,28 @@ impl OpReturnData {
         if !text.starts_with("NXS:") { return None; }
 
         let parts: Vec<&str> = text.split(':').collect();
-        if parts.len() < 4 { return None; }
+        if parts.len() < 5 { return None; }
 
         // parts[0] = "NXS"
-        // parts[1] = version (e.g. "1")
-        // parts[2] = "w=<16hex>"
-        // parts[3] = "p=<16hex>"
+        // parts[1] = "MINT"
+        // parts[2] = "500"
+        // parts[3] = "w=<16hex>"
+        // parts[4] = "p=<16hex>"
 
-        let version: u8 = parts[1].parse().ok()?;
-        let wit_hash = parts[2].strip_prefix("w=")?;
-        let proof_hash = parts[3].strip_prefix("p=")?;
+        let op = parts[1].to_string();
+        let amt: u64 = parts[2].parse().ok()?;
+        let wit_hash = parts[3].strip_prefix("w=")?;
+        let proof_hash = parts[4].strip_prefix("p=")?;
 
         if wit_hash.len() != 16 || proof_hash.len() != 16 { return None; }
 
         Some(Self {
             magic: "NXS".into(),
-            version,
+            op,
+            amt,
             witness_hash_short: wit_hash.to_string(),
             proof_hash_short: proof_hash.to_string(),
-            witness_hash_full: [0u8; 32], // 解析时无完整hash
+            witness_hash_full: [0u8; 32],
             proof_hash_full: [0u8; 32],
         })
     }
@@ -123,7 +128,8 @@ pub fn build_interlock(proof: &TwoRoundProof, pubkey_hex: &str) -> Result<Interl
     // Step 2: opreturn with witness_core_hash (ASCII可读格式)
     let opr = OpReturnData {
         magic: "NXS".into(),
-        version: VERSION,
+        op: "MINT".into(),
+        amt: MINT_AMOUNT,
         witness_hash_short: hex::encode(&wit_core_hash[..8]), // 前8字节 = 16 hex
         proof_hash_short: hex::encode(&proof_bytes[..8]),      // 前8字节 = 16 hex
         witness_hash_full: wit_core_hash,
@@ -262,7 +268,8 @@ mod tests {
     fn opreturn_ascii_readable() {
         let opr = OpReturnData {
             magic: "NXS".into(),
-            version: 1,
+            op: "MINT".into(),
+            amt: 500,
             witness_hash_short: "e2fa8baedf7b7a13".into(),
             proof_hash_short: "ea3af2ee3ac4bdd1".into(),
             witness_hash_full: [0; 32],
@@ -270,12 +277,13 @@ mod tests {
         };
         let bytes = opr.to_bytes();
         let text = String::from_utf8(bytes.clone()).unwrap();
-        assert_eq!(text, "NXS:1:w=e2fa8baedf7b7a13:p=ea3af2ee3ac4bdd1");
+        assert_eq!(text, "NXS:MINT:500:w=e2fa8baedf7b7a13:p=ea3af2ee3ac4bdd1");
         assert!(text.len() < 80); // within OP_RETURN limit
 
         // roundtrip
         let parsed = OpReturnData::from_bytes(&bytes).unwrap();
-        assert_eq!(parsed.version, 1);
+        assert_eq!(parsed.op, "MINT");
+        assert_eq!(parsed.amt, 500);
         assert_eq!(parsed.witness_hash_short, "e2fa8baedf7b7a13");
         assert_eq!(parsed.proof_hash_short, "ea3af2ee3ac4bdd1");
     }
