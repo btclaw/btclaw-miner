@@ -44,7 +44,7 @@ A single NEXUS mint consists of two on-chain transactions: **Commit** and **Reve
 
 ```
 ┌─────────────────────────────────────────────────────────┐
-│                  NEXUS Mint Transaction                  │
+│                 NEXUS Mint Transaction                  │
 │                                                         │
 │  WITNESS LAYER (Inscription JSON)                       │
 │  ┌─────────────────────────────────────────┐            │
@@ -58,7 +58,7 @@ A single NEXUS mint consists of two on-chain transactions: **Commit** and **Reve
 │                                               │         │
 │  OP_RETURN LAYER (ASCII readable)             │         │
 │  ┌─────────────────────────────────────────┐  │         │
-│  │ NXS:MINT:500:w=<wit_hash>:p=<proof_hash>  │         │
+│  │ NXS:MINT:500:w=<wit_hash>:p=<proof_hash>   │         │
 │  │              ↑                          │  │         │
 │  │   SHA256(Witness without opr) ──────────┼──┘         │
 │  └─────────────────────────────────────────┘            │
