@@ -135,8 +135,8 @@ fn install_bitcoin_core() {
             return;
         }
     }
-    println!("  ⏳ 开始安装 Bitcoin Core 28.0...");
-    println!("  (这需要下载约30MB, 请稍候)");
+    println!("  ⏳ 开始安装 Bitcoin Core 30.2...");
+    println!("  (这需要下载约74MB, 请稍候)");
     println!("");
     let script = r#"
         cd /tmp
@@ -144,10 +144,10 @@ fn install_bitcoin_core() {
         if [ "$ARCH" = "x86_64" ]; then BA="x86_64-linux-gnu"; 
         elif [ "$ARCH" = "aarch64" ]; then BA="aarch64-linux-gnu";
         else echo "不支持的架构"; exit 1; fi
-        wget -q "https://bitcoincore.org/bin/bitcoin-core-28.0/bitcoin-28.0-${BA}.tar.gz"
-        tar xzf "bitcoin-28.0-${BA}.tar.gz"
-        sudo install -m 0755 bitcoin-28.0/bin/* /usr/local/bin/
-        rm -rf bitcoin-28.0 "bitcoin-28.0-${BA}.tar.gz"
+        wget -q "https://bitcoincore.org/bin/bitcoin-core-30.2/bitcoin-30.2-${BA}.tar.gz"
+        tar xzf "bitcoin-30.2-${BA}.tar.gz"
+        sudo install -m 0755 bitcoin-30.2/bin/* /usr/local/bin/
+        rm -rf bitcoin-30.2 "bitcoin-30.2-${BA}.tar.gz"
         echo "DONE"
     "#;
     let output = Command::new("bash").arg("-c").arg(script).output();
