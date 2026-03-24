@@ -421,7 +421,7 @@ A minter must fund their Taproot address with at least **10,000 sats**:
 | Component     | Amount        |
 | ------------- | ------------- |
 | Protocol fee  | 5,000 sats    |
-| Miner fee     | ~20-100 sats (at 0.1–1 sat/vB) |
+| Miner fee     | ~20-1000 sats (at 0.1–1 sat/vB) |
 | Dust output   | 330 sats      |
 | Change        | Remainder     |
 
