@@ -110,7 +110,8 @@ impl Indexer {
         let opr = OpReturnData::from_bytes(opr_bytes)
             .ok_or("OP_RETURN格式无效")?;
         if opr.magic != "NXS" { return Err("魔术数错误".into()); }
-        if opr.version != VERSION { return Err(format!("版本号错误: {}", opr.version)); }
+        if opr.op != "MINT" { return Err(format!("操作类型错误: {}", opr.op)); }
+        if opr.amt != MINT_AMOUNT { return Err(format!("OP_RETURN铸造量错误: {}", opr.amt)); }
 
         // ═══ 规则5: 铸造费 (轻量，前置防DoS) ═══
         if !tx.fee_output_valid {
