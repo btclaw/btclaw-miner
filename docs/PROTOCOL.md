@@ -1,12 +1,14 @@
 # NEXUS Protocol
 
+**[English](README.md)** | **[中文](README_CN.md)**
+
 ### The first dual-layer interlocking token on Bitcoin L1.
 
-Every mint transaction simultaneously writes to **two data layers** — Witness (inscription) and OP\_RETURN — cryptographically bound to each other. You cannot mint with a website. You cannot mint with an API. You must run a **full Bitcoin archive node (~600GB)** and the NEXUS Reactor software.
+Every mint transaction simultaneously writes to **two data layers** — Witness (inscription) and OP\_RETURN — cryptographically bound to each other. You cannot mint with a website. You cannot mint with an API. You must run a **full Bitcoin archive node (~850GB)** and the NEXUS Reactor software.
 
 ---
 
-## Why NEXUS exists
+## Why NEXUS Exists
 
 Every Bitcoin token protocol so far has used **one** data layer:
 
@@ -21,27 +23,27 @@ NEXUS is the first protocol that requires **both layers simultaneously**, with e
 
 ---
 
-## How it works
+## How It Works
 
 ```
 ┌─────────────────────────────────────────────────────┐
-│                  NEXUS Mint Transaction             │
+│                NEXUS Mint Transaction               │
 │                                                     │
-│  WITNESS LAYER (Inscription)                        │
+│  WITNESS LAYER (Inscription JSON)                   │
 │  ┌───────────────────────────────────────┐          │
-│  │ protocol:    "nexus"                  │          │
-│  │ operation:   "mint"                   │          │
-│  │ amount:      500 NXS                  │          │
-│  │ node_proof:  <full node proof hash>   │          │
-│  │ opr_hash:    SHA256(OP_RETURN data) ──┼──┐       │
+│  │ p:       "nexus"                      │          │
+│  │ op:      "mint"                       │          │
+│  │ amt:     500                          │          │
+│  │ pk:      <minter x-only pubkey>       │          │
+│  │ fnp:     <full node proof hash>       │          │
+│  │ opr:     SHA256(OP_RETURN data) ──────┼──┐       │
 │  └───────────────────────────────────────┘  │       │
 │                                             │       │
-│  OP_RETURN LAYER (Protocol)                 │       │
+│  OP_RETURN LAYER (ASCII readable)           │       │
 │  ┌───────────────────────────────────────┐  │       │
-│  │ magic:       "NXS"                    │  │       │
-│  │ version:     1                        │  │       │
-│  │ wit_hash:    SHA256(Witness data) ────┼──┘       │
-│  │ proof_hash:  <full node proof hash>   │          │
+│  │ NXS:MINT:500:w=<wit_hash>:p=<proof_hash> │   │   │
+│  │         ↑                             │  │       │
+│  │   SHA256(Witness without opr) ────────┼──┘       │
 │  └───────────────────────────────────────┘          │
 │                                                     │
 │  OUTPUT[0]: 330 sats → minter (token holder)        │
@@ -51,6 +53,25 @@ NEXUS is the first protocol that requires **both layers simultaneously**, with e
 ```
 
 **The two layers reference each other's hash. Tamper with one, the other breaks. This is the interlock.**
+
+### On-Chain Data Format
+
+**Witness JSON** (embedded in Taproot inscription):
+```json
+{
+  "p": "nexus",
+  "op": "mint",
+  "amt": 500,
+  "pk": "b4906faaf2724a59...",
+  "fnp": "a14075ce74aabea5...",
+  "opr": "02935680defa678f..."
+}
+```
+
+**OP\_RETURN** (human-readable on any block explorer):
+```
+NXS:MINT:500:w=b8a4cee75bc2a205:p=a14075ce74aabea5
+```
 
 ---
 
@@ -68,11 +89,11 @@ The Reactor generates a **two-round cryptographic challenge**:
 
 Local NVMe SSD: ~100ms. Remote API relay: ~5-15 seconds (likely timeout).
 
-The Reactor also verifies your `~/.bitcoin/blocks/` directory contains:
+The Reactor also verifies your `blocks/` directory:
 - Total `blk*.dat` size > 500 GB
 - At least 3,000 block files
 - Early files (`blk00000.dat` through `blk00009.dat`) present (pruned nodes delete these)
-- Valid mainnet magic bytes
+- Valid mainnet magic bytes (supports Bitcoin Core 30.x XOR obfuscation)
 
 **No pruned node. No SPV. No API relay. Full archive or nothing.**
 
@@ -87,6 +108,7 @@ The Reactor also verifies your `~/.bitcoin/blocks/` directory contains:
 | **Per Mint** | 500 NXS (fixed) |
 | **Total Mints** | 42,000 |
 | **Mint Fee** | 5,000 sats per mint |
+| **Min Fee Rate** | 0.1 sat/vB |
 | **Requirement** | BTC Full Archive Node + NEXUS Reactor |
 | **Fair Launch** | No premine. No team allocation. FCFS. |
 
@@ -96,12 +118,29 @@ The Reactor also verifies your `~/.bitcoin/blocks/` directory contains:
 
 ### Prerequisites
 
-- Ubuntu 22.04+ / Debian 12+
-- Bitcoin Core 28.0+ (full archive, NOT pruned)
-- ~600 GB SSD for blockchain data
-- Rust toolchain
+- **OS**: Ubuntu 22.04+ / Debian 12+
+- **Bitcoin Core**: 28.0+ (full archive, NOT pruned), supports 30.x with obfuscation
+- **Disk**: ~850 GB SSD for blockchain data
+- **Rust**: 1.70+ (`curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh`)
+- **Python**: 3.10+ with pip
+- **Python packages**: `bip_utils`, `base58`
 
-### Install & Run
+### Install Dependencies
+
+```bash
+# Rust (if not installed)
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+source $HOME/.cargo/env
+
+# System packages
+sudo apt update
+sudo apt install -y build-essential pkg-config libssl-dev python3 python3-pip
+
+# Python packages
+pip install bip_utils base58 --break-system-packages -i https://pypi.org/simple/
+```
+
+### Build & Run
 
 ```bash
 # Clone
@@ -118,7 +157,7 @@ cargo build --release --features regtest
 ./target/release/nexus-reactor
 ```
 
-The interactive menu guides you through everything:
+### Interactive Menu
 
 ```
 ════════════════════════════════════════════════════════════
@@ -139,15 +178,66 @@ The interactive menu guides you through everything:
   [3]  Testnet Mint (regtest)
   [4]  Mainnet Mint
   [5]  Wallet Info
+  [6]  Create Wallet
 
   [0]  Exit
 ```
 
-### Testnet — Try it in 10 minutes
+---
 
-Select `[1]` → `[3]` to start a local regtest node. Then select `[3]` from the main menu to execute a full mint cycle: node verification → proof generation → dual-layer interlock → commit + reveal → block confirmation → on-chain verification.
+## Minting Guide
 
-No real BTC needed. No 600GB download. Instant blocks.
+### Step 1 — Install & Sync Full Node
+
+Select `[1]` from the menu. The Reactor will:
+- Auto-detect if Bitcoin Core is installed
+- Let you choose data directory (`~/.bitcoin`, `/data/bitcoin`, or custom path)
+- Auto-configure `dbcache` based on your system RAM
+- Start `bitcoind` with optimized sync parameters
+
+The Reactor **automatically detects existing nodes** on your server — checks running processes, common paths (`~/.bitcoin`, `/data/bitcoin`, etc.), and saved config.
+
+### Step 2 — Create a Wallet
+
+Select `[6]` to create a new wallet. Choose address type:
+
+| Type | Prefix | Standard | Recommended |
+|------|--------|----------|-------------|
+| **Taproot** | `bc1p...` | BIP86 (P2TR) | ✅ Yes |
+| **Native SegWit** | `bc1q...` | BIP84 (P2WPKH) | Good |
+| **Nested SegWit** | `3...` | BIP49 (P2SH-P2WPKH) | Legacy |
+
+The wallet generates:
+- **12-word BIP39 mnemonic** (compatible with UniSat, OKX, Sparrow, etc.)
+- **WIF private key** for each address type
+- Auto-imports into Bitcoin Core for balance tracking
+
+### Step 3 — Fund Your Address
+
+Send at least **10,000 sats** to your Taproot address:
+- 5,000 sats → protocol mint fee
+- ~1,000 sats → miner fee (at 0.1-1 sat/vB)
+- Remainder → returned as change
+
+### Step 4 — Mint
+
+Select `[4]` Mainnet Mint:
+1. Select wallet (auto-detected from Bitcoin Core)
+2. Enter the wallet number (e.g. enter 1 for an already created wallet)
+3. Set fee rate (minimum 0.1 sat/vB)
+4. Confirm and broadcast
+
+The Reactor handles everything: node verification → proof generation → dual-layer interlock → commit + reveal broadcast.
+
+---
+
+## Testnet (regtest)
+
+Try the full mint cycle in 10 minutes without real BTC:
+
+1. Build with regtest flag: `cargo build --release --features regtest`
+2. Select `[1]` → `[3]` to start local regtest node (200 blocks, 5000 BTC)
+3. Select `[3]` to mint — fully automated with instant block confirmation
 
 ---
 
@@ -158,14 +248,19 @@ nexus-protocol/
 ├── src/
 │   ├── main.rs          # Reactor CLI — interactive menu + mint engine
 │   ├── lib.rs           # Module exports
-│   ├── constants.rs     # All protocol parameters (mainnet/regtest via feature flag)
-│   ├── proof.rs         # Full node proof: disk verification + two-round challenge
-│   ├── transaction.rs   # Dual-layer interlock construction + verification
-│   ├── indexer.rs       # Transaction validation engine (6 rules)
+│   ├── constants.rs     # Protocol parameters (mainnet/regtest via feature flag)
+│   ├── proof.rs         # Full node proof + Bitcoin Core 30.x obfuscation support
+│   ├── transaction.rs   # Dual-layer interlock + pk identity binding
+│   ├── indexer.rs       # Transaction validation engine (7 rules + DoS prefilter)
+│   ├── node_detect.rs   # Auto-detect Bitcoin node + path management
 │   └── ui.rs            # Terminal UI with color
+├── scripts/
+│   └── wallet_gen.py    # BIP39/86/84/49 wallet generator (bip_utils)
 ├── docs/
-│   ├── PROTOCOL.md      # Complete protocol specification
-└── Cargo.toml
+│   └── PROTOCOL.md      # Complete protocol specification
+├── Cargo.toml
+├── README.md            # English
+└── README_CN.md         # 中文
 ```
 
 ---
@@ -173,33 +268,34 @@ nexus-protocol/
 ## Mint Transaction Flow
 
 ```
-[1] Verify Node     Read ~/.bitcoin/blocks/blk*.dat → size > 500GB ✓
+[1] Verify Node     Auto-detect datadir → blk*.dat > 500GB → XOR decrypt magic ✓
          │
 [2] Generate Proof  Two-round challenge → 20 random blocks → 15s window
          │
-[3] Build Interlock Witness payload ←SHA256→ OP_RETURN payload
+[3] Build Interlock Witness JSON (with pk) ←SHA256→ OP_RETURN (ASCII)
          │
 [4] Commit TX       BTC → Taproot address with inscription script tree
          │
-[5] Reveal TX       Script-path spend → inscription + OP_RETURN + 5000 sat fee
+[5] Reveal TX       Script-path spend → inscription + OP_RETURN + fee
          │
-[6] Confirmed       Block inclusion → Indexer validates → 500 NXS credited
+[6] Confirmed       Block inclusion → Indexer validates 7 rules → 500 NXS credited
 ```
 
 ---
 
 ## Indexer Validation Rules
 
-A mint is valid if and only if **all 6 conditions** are met:
+A mint is valid if and only if **all rules** pass (ordered by cost — cheap checks first to prevent DoS):
 
-1. Witness inscription contains `"nexus"` protocol identifier and valid JSON
-2. OP\_RETURN starts with `"NXS"` magic bytes with correct binary format
-3. Dual-layer interlock hashes match (cross-verified)
-4. Full node proof passes two-round verification
-5. Exactly 5,000 sats sent to the protocol fee address
-6. Total mints ≤ 42,000 (supply cap not exceeded, tracked by Indexer)
+1. **Format**: Witness inscription contains `"nexus"` protocol identifier and valid JSON with required fields (`p`, `op`, `amt`, `pk`, `fnp`, `opr`)
+2. **OP\_RETURN**: Starts with `NXS:` prefix, correct ASCII format (`NXS:MINT:500:w=<16hex>:p=<16hex>`)
+3. **Fee**: Exactly 5,000 sats sent to the protocol fee address (checked early to reject spam)
+4. **Interlock**: Dual-layer hashes match — `SHA256(OP_RETURN) == witness.opr` and `SHA256(witness_without_opr)[..8] == OP_RETURN.w`
+5. **Identity**: `pk` field in JSON must match the Taproot x-only public key that signed the transaction (prevents identity spoofing)
+6. **Proof**: Full node proof passes two-round verification with precheck (heights count, time window, field lengths) + replay protection via used-proof table
+7. **Supply**: Total mints ≤ 42,000 (supply cap not exceeded)
 
-Sequence numbers assigned by block confirmation order. First confirmed, first served.
+Sequence numbers are **assigned by the Indexer** based on transaction position within each block. First confirmed, first served.
 
 ---
 
@@ -209,45 +305,69 @@ Sequence numbers assigned by block confirmation order. First confirmed, first se
 |--------------|---------|
 | API relay (no full node) | Two-round 15s window. Local ~100ms vs API ~5-15s |
 | Pruned node disguise | Direct disk read: blk files > 500GB + early files exist |
-| Shared Reactor proxy | Proof bound to minter's public key |
+| Identity spoofing | `pk` field bound to Taproot signing key + Indexer cross-check |
 | Proof replay | Used-proof deduplication in Indexer |
-| Interlock tampering | Bidirectional SHA-256 hash verification |
+| Interlock tampering | Bidirectional SHA-256 hash verification (pk participates in hash) |
 | Mint ordering | Indexer assigns sequence by tx position in block — FCFS |
+| Bitcoin Core 30.x encryption | Auto-detect obfuscation key, XOR decrypt blk files |
+| DoS (spam invalid proofs) | Cheap checks first (fee, format, interlock) before expensive proof verification |
+| Unlimited mint | Fixed `amt=500`, supply cap enforced, proof uniqueness |
 
 ---
 
 ## On-Chain Verification
 
-Every NEXUS mint is permanently visible on-chain with two layers of data:
+Every NEXUS mint is permanently visible on any block explorer:
 
+**OP\_RETURN (human-readable):**
 ```
-┌── Witness Layer / Inscription ──
-│ Protocol:    nexus
-│ Operation:   mint
-│ Amount:      500 NXS
-│ Node Proof:  1be38a64af1bc4d2...
-│ OPR Hash:    874b4a6c3fc4331c...
-└─────────────────────────────────
-
-┌── OP_RETURN Layer / Protocol ──
-│ Magic:       NXS
-│ Version:     1
-│ Wit Hash:    91c34342219faab3...
-│ Proof Hash:  1be38a64af1bc4d2...
-└─────────────────────────────────
+NXS:MINT:500:w=b8a4cee75bc2a205:p=a14075ce74aabea5
 ```
 
-Both layers cross-reference each other. Both contain the same full node proof hash. Verifiable by anyone running a Bitcoin full node.
+**Witness inscription (JSON):**
+```json
+{
+  "p": "nexus",
+  "op": "mint",
+  "amt": 500,
+  "pk": "b4906faaf2724a591af6ae26aed26c355e65f70565d4c3c0665eeebcbc58332d",
+  "fnp": "a14075ce74aabea522d36247e144ea019bda1cb79393323f1133ee3b59344c9f",
+  "opr": "02935680defa678f4df10356b5254c0966718d58280e5d3ca89ac05cc7002ba3"
+}
+```
+
+Both layers cross-reference each other. The `pk` field binds the mint to the signing key.
+
+---
+
+## Configuration
+
+The Reactor saves settings to `nexus_config.json`:
+
+```json
+{
+  "bitcoin_datadir": "/root/.bitcoin",
+  "rpc_url": "http://127.0.0.1:8332",
+  "rpc_user": "nexus",
+  "rpc_pass": "your_password",
+  "network": "main"
+}
+```
+
+Edit this file to configure RPC credentials, data directory, etc.
 
 ---
 
 ## FAQ
 
 **Q: Why require a full node to mint?**
-The barrier IS the value. Bitcoin was meant to be run by node operators, not website clickers. If you're not willing to dedicate 600GB to Bitcoin, you're not the target audience.
+The barrier IS the value. Bitcoin was meant to be run by node operators, not website clickers. If you're not willing to dedicate 850GB to Bitcoin, you're not the target audience.
 
 **Q: Can someone build a web minter?**
 No. The full node proof requires reading raw bytes from local `blk*.dat` files at random offsets determined by the latest block hash. No public API provides this data in the required format within the 15-second window.
+
+**Q: Can someone fake a mint?**
+No. The Indexer validates 7 rules including dual-layer hash interlock, identity binding (pk must match signing key), proof uniqueness, and fee payment. Forging any single element breaks the chain.
 
 **Q: Is there a premine or team allocation?**
 No. Zero premine. The protocol fee address receives 5,000 sats per mint — that's it. All 21,000,000 NXS are distributed through fair minting.
@@ -256,7 +376,13 @@ No. Zero premine. The protocol fee address receives 5,000 sats per mint — that
 Minting ends permanently. NXS can only be transferred, never created again.
 
 **Q: Which wallets support NEXUS?**
-The NEXUS Reactor handles minting. Transfer support will follow as Indexer infrastructure matures.
+The Reactor generates BIP39-standard wallets compatible with UniSat, OKX Wallet, Sparrow, and any BIP86-compliant wallet. Transfer support follows as Indexer infrastructure matures.
+
+**Q: Does it work with Bitcoin Core 30.x?**
+Yes. The Reactor auto-detects the XOR obfuscation key introduced in Bitcoin Core 30.0 and decrypts `blk*.dat` files transparently.
+
+**Q: What is the minimum fee rate?**
+0.1 sat/vB. You can set any fee rate when minting.
 
 ---
 
@@ -264,6 +390,7 @@ The NEXUS Reactor handles minting. Transfer support will follow as Indexer infra
 
 - **GitHub**: [github.com/btcnexus/nexus-protocol](https://github.com/btcnexus/nexus-protocol)
 - **Protocol Spec**: [`docs/PROTOCOL.md`](docs/PROTOCOL.md)
+
 ---
 
 ## License
