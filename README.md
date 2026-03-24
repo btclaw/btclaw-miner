@@ -41,7 +41,7 @@ NEXUS is the first protocol that requires **both layers simultaneously**, with e
 │                                             │       │
 │  OP_RETURN LAYER (ASCII readable)           │       │
 │  ┌───────────────────────────────────────┐  │       │
-│  │ NXS:1:w=<wit_hash>:p=<proof_hash>    │   │       │
+│  │ NXS:MINT:500:w=<wit_hash>:p=<proof_hash> │   │   │
 │  │         ↑                             │  │       │
 │  │   SHA256(Witness without opr) ────────┼──┘       │
 │  └───────────────────────────────────────┘          │
@@ -70,7 +70,7 @@ NEXUS is the first protocol that requires **both layers simultaneously**, with e
 
 **OP\_RETURN** (human-readable on any block explorer):
 ```
-NXS:1:w=b8a4cee75bc2a205:p=a14075ce74aabea5
+NXS:MINT:500:w=b8a4cee75bc2a205:p=a14075ce74aabea5
 ```
 
 ---
@@ -288,7 +288,7 @@ nexus-protocol/
 A mint is valid if and only if **all rules** pass (ordered by cost — cheap checks first to prevent DoS):
 
 1. **Format**: Witness inscription contains `"nexus"` protocol identifier and valid JSON with required fields (`p`, `op`, `amt`, `pk`, `fnp`, `opr`)
-2. **OP\_RETURN**: Starts with `NXS:` prefix, correct ASCII format (`NXS:1:w=<16hex>:p=<16hex>`)
+2. **OP\_RETURN**: Starts with `NXS:` prefix, correct ASCII format (`NXS:MINT:500:w=<16hex>:p=<16hex>`)
 3. **Fee**: Exactly 5,000 sats sent to the protocol fee address (checked early to reject spam)
 4. **Interlock**: Dual-layer hashes match — `SHA256(OP_RETURN) == witness.opr` and `SHA256(witness_without_opr)[..8] == OP_RETURN.w`
 5. **Identity**: `pk` field in JSON must match the Taproot x-only public key that signed the transaction (prevents identity spoofing)
@@ -321,7 +321,7 @@ Every NEXUS mint is permanently visible on any block explorer:
 
 **OP\_RETURN (human-readable):**
 ```
-NXS:1:w=b8a4cee75bc2a205:p=a14075ce74aabea5
+NXS:MINT:500:w=b8a4cee75bc2a205:p=a14075ce74aabea5
 ```
 
 **Witness inscription (JSON):**
