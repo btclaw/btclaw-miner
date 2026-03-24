@@ -18,11 +18,11 @@ pub const MINT_AMOUNT: u64 = 500;
 pub const TOTAL_MINTS: u32 = 42_000;
 
 /// 铸造费 (satoshis)
-pub const MINT_FEE_SATS: u64 = 5_000;
+pub const MINT_FEE_SATS: u64 = 330;
 
 /// 项目方收费地址 (部署前替换为你的真实Taproot地址)
 #[cfg(not(feature = "regtest"))]
-pub const FEE_ADDRESS: &str = "bc1q_REPLACE_WITH_YOUR_ADDRESS";
+pub const FEE_ADDRESS: &str = "bc1p8d6a2pu8hdpk9tq3tt64ys2947e4hgn6j5msgqaycptj08xgvrpqqtd98h";
 
 #[cfg(feature = "regtest")]
 pub const FEE_ADDRESS: &str = "bcrt1pt69vsuspaadg4kd3k8dv48edvq6e2x5td3m4gxjwc43ymd92ve8q7f67e0"; // 运行时动态设置
@@ -67,3 +67,26 @@ pub const BTC_MAINNET_MAGIC: [u8; 4] = [0xF9, 0xBE, 0xB4, 0xD9];
 /// Bitcoin regtest magic bytes
 #[cfg(feature = "regtest")]
 pub const BTC_MAINNET_MAGIC: [u8; 4] = [0xF4, 0xC1, 0xFF, 0x14];
+
+// ═══════════════════════════════════════════
+//  UTXO 安全管理常量
+// ═══════════════════════════════════════════
+
+/// BTC 标准 dust limit (546 sats)
+/// ≤ 此值的UTXO几乎必定绑定了铭文/符文/协议资产, 默认锁定
+pub const DUST_LIMIT: u64 = 546;
+
+/// 安全花费阈值 (1000 sats)
+/// > 此值: 默认可花费
+/// 547-1000: 灰色地带, 默认锁定
+pub const SAFE_UTXO_THRESHOLD: u64 = 1000;
+
+/// Commit TX 最大输入数量
+/// 限制多UTXO合并的输入数, 避免交易过大或超过 mempool 策略限制
+pub const MAX_COMMIT_INPUTS: usize = 10;
+
+/// Commit TX 基础 vsize (1输入1输出 + overhead, 约 154 vB)
+/// 每增加1个输入约 +68 vB, 每增加1个输出约 +43 vB
+pub const COMMIT_VSIZE_BASE: u64 = 86;
+pub const COMMIT_VSIZE_PER_INPUT: u64 = 68;
+pub const COMMIT_VSIZE_PER_OUTPUT: u64 = 43;
