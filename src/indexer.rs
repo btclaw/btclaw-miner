@@ -1,11 +1,12 @@
-/// NEXUS Indexer — 极简验证，仅6条规则
+/// NEXUS Indexer — 7条验证规则
 ///
 /// 1. Witness铭文含"nexus"且格式正确
 /// 2. OP_RETURN以"NXS"开头且格式正确
-/// 3. 双层互锁hash验证通过
-/// 4. 全节点证明验证通过
-/// 5. 铸造费5000sats正确发送到项目方地址
-/// 6. mint_seq <= 42,000 (总量未超)
+/// 3. 铸造费5000sats正确发送到项目方地址 (轻量，前置防DoS)
+/// 4. 双层互锁hash验证通过
+/// 5. 身份绑定 — pk必须匹配交易签名的Taproot公钥
+/// 6. 全节点证明验证通过 (最昂贵，放最后)
+/// 7. mint_seq <= 42,000 (总量未超)
 ///
 /// 序号分配: 按区块确认顺序 + 区块内交易位置排序
 
@@ -90,7 +91,7 @@ impl Indexer {
         get_raw_block: &dyn Fn(u32) -> Result<Vec<u8>, String>,
     ) -> Result<MintRecord, String> {
 
-        // ═══ 规则6: 总量检查 ═══
+        // ═══ 规则7: 总量检查 ═══
         if self.minted >= MAX_SUPPLY {
             return Err("铸造已结束，总量21,000,000已达上限".into());
         }
@@ -113,7 +114,7 @@ impl Indexer {
         if opr.op != "MINT" { return Err(format!("操作类型错误: {}", opr.op)); }
         if opr.amt != MINT_AMOUNT { return Err(format!("OP_RETURN铸造量错误: {}", opr.amt)); }
 
-        // ═══ 规则5: 铸造费 (轻量，前置防DoS) ═══
+        // ═══ 规则3: 铸造费 (轻量，前置防DoS) ═══
         if !tx.fee_output_valid {
             return Err(format!(
                 "铸造费无效: 需向 {} 支付 {} sats",
@@ -121,10 +122,10 @@ impl Indexer {
             ));
         }
 
-        // ═══ 规则3: 双层互锁 ═══
+        // ═══ 规则4: 双层互锁 ═══
         verify_interlock(witness_json, opr_bytes)?;
 
-        // ═══ 规则3.5: 身份绑定 — pk必须匹配交易签名公钥 ═══
+        // ═══ 规则5: 身份绑定 — pk必须匹配交易签名公钥 ═══
         if wit.pk.is_empty() {
             return Err("缺少公钥字段pk".into());
         }
@@ -137,10 +138,10 @@ impl Indexer {
             }
         }
 
-        // ═══ 规则4: 全节点证明 (最昂贵，放最后) ═══
+        // ═══ 规则6: 全节点证明 (最昂贵，放最后) ═══
         let proof = tx.proof.as_ref()
             .ok_or("缺少全节点证明")?;
-        // 4a. 轻量预检查 (防DoS)
+        // 6a. 轻量预检查 (防DoS)
         if proof.round1_heights.len() != CHALLENGES_PER_ROUND
             || proof.round2_heights.len() != CHALLENGES_PER_ROUND {
             return Err("proof轮次数量异常".into());
@@ -151,11 +152,11 @@ impl Indexer {
         if proof.combined.len() != 64 || proof.pubkey.len() != 66 {
             return Err("proof字段长度异常".into());
         }
-        // 4b. 防重放
+        // 6b. 防重放
         if self.used_proofs.contains_key(&proof.combined) {
             return Err("该全节点证明已被使用 (重放攻击)".into());
         }
-        // 4c. 完整验证
+        // 6c. 完整验证
         verify_proof(proof, get_raw_block)?;
 
         // ═══ 全部通过 ═══
