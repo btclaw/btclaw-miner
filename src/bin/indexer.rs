@@ -1,6 +1,10 @@
-/// NEXUS Indexer Server v2.9.1 — 扫链 + REST API
+/// NEXUS Indexer Server v2.9.2 — 扫链 + REST API + 响应缓存
 ///
-/// 扫描BTC区块链，找到所有NEXUS铸造交易，验证7条规则，提供HTTP查询
+/// 优化：
+///   - 响应缓存层：HTTP 处理器不再锁 Indexer Mutex，直接读预序列化 JSON
+///   - RwLock 缓存：多个 HTTP 请求并发读取，零阻塞
+///   - Cache-Control：CF 边缘缓存 5 秒，减少回源
+///   - 扫描线程：每轮扫描后更新缓存，HTTP 永不等待扫描完成
 ///
 /// API端点:
 ///   GET /api/status              — 铸造进度、供应量、持有者数
@@ -8,12 +12,12 @@
 ///   GET /api/mint/:seq           — 按序号查铸造记录
 ///   GET /api/mints?page=1&limit=20 — 分页铸造列表
 ///   GET /api/mints/recent        — 最近铸造记录（前端用，最新20条）
-///   GET /api/mints/address/:addr — 按地址查铸造记录（前端查询 + 钱包连接后自动查）
+///   GET /api/mints/address/:addr — 按地址查铸造记录
 ///   GET /api/holders             — 持有者排行（前100）
 ///   GET /api/tx/:txid            — 按txid查铸造记录
 ///   GET /api/health              — 健康检查
 
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
 use std::collections::HashMap;
 use actix_web::{web, App, HttpServer, HttpResponse, middleware};
 use serde::{Serialize, Deserialize};
@@ -24,15 +28,97 @@ use nexus_reactor::transaction::*;
 use nexus_reactor::node_detect;
 
 // ═══════════════════════════════════════════
+//  响应缓存 — HTTP处理器只读这里，不锁Indexer
+// ═══════════════════════════════════════════
+
+/// 预序列化的 JSON 响应，由扫描线程定期更新
+struct ResponseCache {
+    status: String,
+    holders: String,
+    mints_recent: String,
+    health: String,
+}
+
+impl ResponseCache {
+    fn empty() -> Self {
+        Self {
+            status: "{}".to_string(),
+            holders: r#"{"holders":[],"total_holders":0}"#.to_string(),
+            mints_recent: r#"{"mints":[],"total":0}"#.to_string(),
+            health: r#"{"status":"starting","protocol":"NEXUS","version":"2.9.2"}"#.to_string(),
+        }
+    }
+}
+
+// ═══════════════════════════════════════════
 //  状态
 // ═══════════════════════════════════════════
 
 struct AppState {
     indexer: Mutex<Indexer>,
     scan_height: Mutex<u32>,
+    /// 预序列化响应缓存 — RwLock 允许多个 HTTP 并发读
+    cache: RwLock<ResponseCache>,
     rpc_url: String,
     rpc_user: String,
     rpc_pass: String,
+}
+
+// ═══════════════════════════════════════════
+//  缓存刷新 — 扫描线程调用
+// ═══════════════════════════════════════════
+
+/// 锁 indexer 一次，序列化所有高频响应，写入 RwLock 缓存
+/// HTTP 处理器直接读缓存，永远不等待扫描
+fn refresh_cache(state: &AppState) {
+    let indexer = state.indexer.lock().unwrap();
+    let scan_h = *state.scan_height.lock().unwrap();
+
+    // status
+    let mut status_val = serde_json::to_value(&indexer.status()).unwrap();
+    status_val["scan_height"] = serde_json::json!(scan_h);
+    let status_json = serde_json::to_string(&status_val).unwrap_or_default();
+
+    // holders (top 100)
+    let mut holders_list: Vec<serde_json::Value> = indexer.balances.iter()
+        .map(|(addr, &bal)| {
+            let mint_count = indexer.mints.iter().filter(|m| m.address == *addr).count();
+            serde_json::json!({"address": addr, "balance": bal, "mint_count": mint_count})
+        })
+        .collect();
+    holders_list.sort_by(|a, b| b["balance"].as_u64().cmp(&a["balance"].as_u64()));
+    holders_list.truncate(100);
+    let holders_json = serde_json::to_string(&serde_json::json!({
+        "total_holders": indexer.balances.len(),
+        "holders": holders_list,
+    })).unwrap_or_default();
+
+    // mints/recent (top 20, newest first)
+    let total = indexer.mints.len();
+    let start = if total > 20 { total - 20 } else { 0 };
+    let mut recent: Vec<_> = indexer.mints[start..].to_vec();
+    recent.reverse();
+    let mints_list: Vec<serde_json::Value> = recent.iter().map(|m| {
+        serde_json::json!({
+            "seq": m.seq, "address": m.address, "amount": m.amount,
+            "reveal_txid": m.txid, "block_height": m.block_height,
+        })
+    }).collect();
+    let mints_json = serde_json::to_string(&serde_json::json!({
+        "mints": mints_list, "total": total,
+    })).unwrap_or_default();
+
+    // health
+    let health_json = serde_json::to_string(&serde_json::json!({
+        "status": "ok", "protocol": "NEXUS", "version": "2.9.2", "scan_height": scan_h,
+    })).unwrap_or_default();
+
+    // 写入缓存（write lock 很短，只是赋值字符串）
+    let mut cache = state.cache.write().unwrap();
+    cache.status = status_json;
+    cache.holders = holders_json;
+    cache.mints_recent = mints_json;
+    cache.health = health_json;
 }
 
 // ═══════════════════════════════════════════
@@ -108,12 +194,10 @@ fn get_raw_tx(client: &reqwest::blocking::Client, url: &str, user: &str, pass: &
 //  交易解析
 // ═══════════════════════════════════════════
 
-/// 从RPC交易数据中提取NEXUS铸造候选
 fn parse_candidate(tx: &serde_json::Value, block_height: u32, tx_index: u32) -> Option<CandidateTx> {
     let txid = tx["txid"].as_str()?.to_string();
     let vouts = tx["vout"].as_array()?;
 
-    // 快速筛选: 是否有NXS OP_RETURN
     let mut opreturn_data: Option<Vec<u8>> = None;
     let mut fee_output_valid = false;
     let mut minter_address = String::new();
@@ -124,7 +208,6 @@ fn parse_candidate(tx: &serde_json::Value, block_height: u32, tx_index: u32) -> 
 
         match script_type {
             "nulldata" => {
-                // OP_RETURN
                 if let Ok(script_bytes) = hex::decode(hex_str) {
                     if script_bytes.len() > 4 && script_bytes[0] == 0x6a {
                         let data_start = if script_bytes.len() > 2 && script_bytes[1] <= 75 {
@@ -158,28 +241,22 @@ fn parse_candidate(tx: &serde_json::Value, block_height: u32, tx_index: u32) -> 
         }
     }
 
-    // 没有NXS OP_RETURN就跳过
     opreturn_data.as_ref()?;
 
-    // 提取Witness铭文JSON
     let mut witness_json: Option<String> = None;
     let mut tx_pubkey: Option<String> = None;
 
     if let Some(vin0) = tx["vin"].as_array().and_then(|a| a.first()) {
         if let Some(witness) = vin0["txinwitness"].as_array() {
-            // 提取公钥 (从铭文脚本的前32字节)
             if witness.len() >= 2 {
                 let script_hex = witness[1].as_str().unwrap_or("");
-                // 前2个字节是push_32, 接下来32字节是公钥
                 if script_hex.len() >= 66 {
-                    // 跳过OP_PUSHBYTES_32 (0x20)
                     let pk_start = if &script_hex[..2] == "20" { 2 } else { 0 };
                     if script_hex.len() >= pk_start + 64 {
                         tx_pubkey = Some(script_hex[pk_start..pk_start + 64].to_string());
                     }
                 }
 
-                // 提取JSON (找 7b22 = '{"')
                 if let Some(idx) = script_hex.find("7b22") {
                     let json_hex = &script_hex[idx..];
                     let mut depth: i32 = 0;
@@ -196,7 +273,6 @@ fn parse_candidate(tx: &serde_json::Value, block_height: u32, tx_index: u32) -> 
                     }
                     if end > 0 {
                         if let Ok(json_str) = String::from_utf8(bytes[..end].to_vec()) {
-                            // 验证是NEXUS铸造
                             if json_str.contains("\"nexus\"") && json_str.contains("\"mint\"") {
                                 witness_json = Some(json_str);
                             }
@@ -207,7 +283,6 @@ fn parse_candidate(tx: &serde_json::Value, block_height: u32, tx_index: u32) -> 
         }
     }
 
-    // 必须有witness JSON才算候选
     witness_json.as_ref()?;
 
     Some(CandidateTx {
@@ -217,7 +292,7 @@ fn parse_candidate(tx: &serde_json::Value, block_height: u32, tx_index: u32) -> 
         minter_address,
         witness_json,
         opreturn_bytes: opreturn_data,
-        proof: None, // Indexer轻量模式: 不重新验证proof（信任链上数据）
+        proof: None,
         fee_output_valid,
         tx_pubkey,
     })
@@ -242,12 +317,13 @@ fn scan_blocks(state: &AppState) {
 
     let current_scan = *state.scan_height.lock().unwrap();
 
-    // 每次最多扫100个区块
     let start = if current_scan == 0 { GENESIS_BLOCK } else { current_scan + 1 };
     let end = chain_height.min(start + 100);
 
     if start > chain_height {
-        return; // 已追上
+        // 即使没有新区块，也刷新缓存（保持 scan_height 更新）
+        refresh_cache(state);
+        return;
     }
 
     let mut found = 0u32;
@@ -278,7 +354,6 @@ fn scan_blocks(state: &AppState) {
         if !candidates.is_empty() {
             let mut indexer = state.indexer.lock().unwrap();
             for candidate in candidates {
-                // 轻量验证（不重新计算proof，只验证格式+互锁+fee+pk）
                 match light_validate(&indexer, &candidate) {
                     Ok(record) => {
                         println!("[scan] ✅ MINT #{} at block {} tx {}",
@@ -300,22 +375,21 @@ fn scan_blocks(state: &AppState) {
     let indexer = state.indexer.lock().unwrap();
     let scan_h = *state.scan_height.lock().unwrap();
     save_state(&indexer, scan_h);
+    drop(indexer); // 显式释放锁，再刷新缓存
+
+    // ★ 关键：扫描完成后刷新缓存，HTTP 处理器从缓存读取
+    refresh_cache(state);
 
     if found > 0 {
-        println!("[scan] Scanned {} → {}, found {} mints, total: {} NXS",
-            start, end, found, indexer.minted);
+        println!("[scan] Scanned {} → {}, found {} mints", start, end, found);
     }
 }
 
-/// 轻量验证 — 不重新计算proof（链上数据已经由矿工确认）
-/// 只验证格式、互锁、fee、pk、唯一性
 fn light_validate(indexer: &Indexer, tx: &CandidateTx) -> Result<MintRecord, String> {
-    // 总量检查
     if indexer.minted >= MAX_SUPPLY {
         return Err("supply exhausted".into());
     }
 
-    // Witness格式
     let witness_json = tx.witness_json.as_ref().ok_or("no witness")?;
     let wit: WitnessPayload = serde_json::from_str(witness_json)
         .map_err(|e| format!("JSON parse: {}", e))?;
@@ -323,32 +397,26 @@ fn light_validate(indexer: &Indexer, tx: &CandidateTx) -> Result<MintRecord, Str
         return Err("field mismatch".into());
     }
 
-    // pk非空
     if wit.pk.is_empty() {
         return Err("missing pk".into());
     }
 
-    // pk匹配
     if let Some(ref tx_pk) = tx.tx_pubkey {
         if wit.pk != *tx_pk {
             return Err(format!("pk mismatch: {} vs {}", &wit.pk[..16], &tx_pk[..16]));
         }
     }
 
-    // OP_RETURN格式
     let opr_bytes = tx.opreturn_bytes.as_ref().ok_or("no opreturn")?;
     let opr = OpReturnData::from_bytes(opr_bytes).ok_or("bad opreturn")?;
     if opr.magic != "NXS" || opr.op != "MINT" { return Err("bad magic/op".into()); }
 
-    // 互锁验证
     verify_interlock(witness_json, opr_bytes)?;
 
-    // Fee
     if !tx.fee_output_valid {
         return Err("fee invalid".into());
     }
 
-    // fnp唯一性（防重放）
     if indexer.used_proofs.contains_key(&wit.fnp) {
         return Err("proof already used".into());
     }
@@ -363,35 +431,61 @@ fn light_validate(indexer: &Indexer, tx: &CandidateTx) -> Result<MintRecord, Str
     })
 }
 
-// ═══════════════════════════════════════════
-//  Genesis区块 — 从这里开始扫描
-// ═══════════════════════════════════════════
-
-/// 设置为你第一笔铸造所在的区块高度（减1）
-/// 这样Indexer不用扫94万个空区块
 const GENESIS_BLOCK: u32 = 941890;
 
 // ═══════════════════════════════════════════
-//  HTTP API — 原有端点 (路由加 /api 前缀)
+//  HTTP 响应辅助 — 带 Cache-Control
 // ═══════════════════════════════════════════
 
-async fn api_status(data: web::Data<Arc<AppState>>) -> HttpResponse {
-    let indexer = data.indexer.lock().unwrap();
-    let scan_h = *data.scan_height.lock().unwrap();
-    let status = indexer.status();
-    let mut resp = serde_json::to_value(&status).unwrap();
-    resp["scan_height"] = serde_json::json!(scan_h);
-    HttpResponse::Ok().json(resp)
+/// 返回 JSON 字符串 + Cache-Control 头
+/// max-age=5: CF 边缘缓存 5 秒（减少回源 80%+）
+/// stale-while-revalidate=30: 缓存过期后 30 秒内先返回旧数据
+fn cached_json_response(body: &str) -> HttpResponse {
+    HttpResponse::Ok()
+        .insert_header(("Content-Type", "application/json"))
+        .insert_header(("Cache-Control", "public, max-age=5, stale-while-revalidate=30"))
+        .body(body.to_string())
 }
+
+// ═══════════════════════════════════════════
+//  HTTP API — 高频端点从缓存读取（零锁等待）
+// ═══════════════════════════════════════════
+
+/// GET /api/status — 从缓存读取，不锁 Indexer
+async fn api_status(data: web::Data<Arc<AppState>>) -> HttpResponse {
+    let cache = data.cache.read().unwrap();
+    cached_json_response(&cache.status)
+}
+
+/// GET /api/holders — 从缓存读取
+async fn api_holders(data: web::Data<Arc<AppState>>) -> HttpResponse {
+    let cache = data.cache.read().unwrap();
+    cached_json_response(&cache.holders)
+}
+
+/// GET /api/mints/recent — 从缓存读取
+async fn api_mints_recent(data: web::Data<Arc<AppState>>) -> HttpResponse {
+    let cache = data.cache.read().unwrap();
+    cached_json_response(&cache.mints_recent)
+}
+
+/// GET /api/health — 从缓存读取
+async fn api_health(data: web::Data<Arc<AppState>>) -> HttpResponse {
+    let cache = data.cache.read().unwrap();
+    cached_json_response(&cache.health)
+}
+
+// ═══════════════════════════════════════════
+//  HTTP API — 低频端点（仍需锁 Indexer，但请求量小）
+// ═══════════════════════════════════════════
 
 async fn api_balance(data: web::Data<Arc<AppState>>, path: web::Path<String>) -> HttpResponse {
     let addr = path.into_inner();
     let indexer = data.indexer.lock().unwrap();
     let balance = indexer.balances.get(&addr).copied().unwrap_or(0);
-    HttpResponse::Ok().json(serde_json::json!({
-        "address": addr,
-        "balance": balance,
-    }))
+    cached_json_response(&serde_json::to_string(&serde_json::json!({
+        "address": addr, "balance": balance,
+    })).unwrap())
 }
 
 async fn api_mint_by_seq(data: web::Data<Arc<AppState>>, path: web::Path<u32>) -> HttpResponse {
@@ -425,35 +519,9 @@ async fn api_mints(data: web::Data<Arc<AppState>>, query: web::Query<PageQuery>)
     };
 
     HttpResponse::Ok().json(serde_json::json!({
-        "page": page,
-        "limit": limit,
-        "total": total,
+        "page": page, "limit": limit, "total": total,
         "total_pages": (total + limit - 1) / limit,
         "mints": mints,
-    }))
-}
-
-async fn api_holders(data: web::Data<Arc<AppState>>) -> HttpResponse {
-    let indexer = data.indexer.lock().unwrap();
-    let mut holders: Vec<serde_json::Value> = indexer.balances.iter()
-        .map(|(addr, &bal)| {
-            // 计算该地址的铸造次数（前端排行榜用）
-            let mint_count = indexer.mints.iter()
-                .filter(|m| m.address == *addr)
-                .count();
-            serde_json::json!({
-                "address": addr,
-                "balance": bal,
-                "mint_count": mint_count,
-            })
-        })
-        .collect();
-    holders.sort_by(|a, b| b["balance"].as_u64().cmp(&a["balance"].as_u64()));
-    holders.truncate(100);
-
-    HttpResponse::Ok().json(serde_json::json!({
-        "total_holders": indexer.balances.len(),
-        "holders": holders,
     }))
 }
 
@@ -466,92 +534,37 @@ async fn api_tx(data: web::Data<Arc<AppState>>, path: web::Path<String>) -> Http
     }
 }
 
-async fn api_health(data: web::Data<Arc<AppState>>) -> HttpResponse {
-    let scan_h = *data.scan_height.lock().unwrap();
-    HttpResponse::Ok().json(serde_json::json!({
-        "status": "ok",
-        "protocol": "NEXUS",
-        "version": "2.9.1",
-        "scan_height": scan_h,
-    }))
-}
-
-// ═══════════════════════════════════════════
-//  HTTP API — 新增端点 (前端专用)
-// ═══════════════════════════════════════════
-
-/// GET /api/mints/recent — 最近铸造记录（最新在前，前端实时流用）
-async fn api_mints_recent(data: web::Data<Arc<AppState>>) -> HttpResponse {
-    let indexer = data.indexer.lock().unwrap();
-
-    // 取最后20条，倒序（最新在前）
-    let total = indexer.mints.len();
-    let start = if total > 20 { total - 20 } else { 0 };
-    let mut recent: Vec<_> = indexer.mints[start..].to_vec();
-    recent.reverse();
-
-    // 转换为前端需要的格式
-    let mints: Vec<serde_json::Value> = recent.iter().map(|m| {
-        serde_json::json!({
-            "seq": m.seq,
-            "address": m.address,
-            "amount": m.amount,
-            "reveal_txid": m.txid,
-            "block_height": m.block_height,
-        })
-    }).collect();
-
-    HttpResponse::Ok().json(serde_json::json!({
-        "mints": mints,
-        "total": total,
-    }))
-}
-
-/// GET /api/mints/address/{addr} — 按地址查铸造记录（钱包连接后自动查询用）
+/// GET /api/mints/address/{addr}
 async fn api_mints_by_address(data: web::Data<Arc<AppState>>, path: web::Path<String>) -> HttpResponse {
     let addr = path.into_inner();
     let indexer = data.indexer.lock().unwrap();
 
     let mut mints: Vec<serde_json::Value> = indexer.mints.iter()
         .filter(|m| m.address == addr)
-        .map(|m| {
-            serde_json::json!({
-                "seq": m.seq,
-                "address": m.address,
-                "amount": m.amount,
-                "reveal_txid": m.txid,
-                "block_height": m.block_height,
-            })
-        })
+        .map(|m| serde_json::json!({
+            "seq": m.seq, "address": m.address, "amount": m.amount,
+            "reveal_txid": m.txid, "block_height": m.block_height,
+        }))
         .collect();
-
-    // 最新在前
     mints.reverse();
 
     let balance = indexer.balances.get(&addr).copied().unwrap_or(0);
 
-    HttpResponse::Ok().json(serde_json::json!({
-        "address": addr,
-        "balance": balance,
-        "mint_count": mints.len(),
-        "mints": mints,
-    }))
+    cached_json_response(&serde_json::to_string(&serde_json::json!({
+        "address": addr, "balance": balance,
+        "mint_count": mints.len(), "mints": mints,
+    })).unwrap())
 }
 
-/// GET /api/mint/tx/{txid} — 按txid查铸造记录（前端查询框用，包装成前端需要的格式）
+/// GET /api/mint/tx/{txid}
 async fn api_mint_by_tx(data: web::Data<Arc<AppState>>, path: web::Path<String>) -> HttpResponse {
     let txid = path.into_inner();
     let indexer = data.indexer.lock().unwrap();
     match indexer.mints.iter().find(|m| m.txid == txid) {
         Some(m) => {
             HttpResponse::Ok().json(serde_json::json!({
-                "mints": [{
-                    "seq": m.seq,
-                    "address": m.address,
-                    "amount": m.amount,
-                    "reveal_txid": m.txid,
-                    "block_height": m.block_height,
-                }],
+                "mints": [{"seq": m.seq, "address": m.address, "amount": m.amount,
+                    "reveal_txid": m.txid, "block_height": m.block_height}],
                 "total": 1,
             }))
         }
@@ -567,29 +580,32 @@ async fn api_mint_by_tx(data: web::Data<Arc<AppState>>, path: web::Path<String>)
 async fn main() -> std::io::Result<()> {
     println!();
     println!("  ╔════════════════════════════════════════╗");
-    println!("  ║  NEXUS Indexer v2.9.1                  ║");
-    println!("  ║  Scanning Bitcoin blockchain...        ║");
-    println!("  ║  + Web Frontend API endpoints          ║");
+    println!("  ║  NEXUS Indexer v2.9.2                  ║");
+    println!("  ║  + Response Cache Layer                ║");
+    println!("  ║  + Cache-Control for CF Edge           ║");
     println!("  ╚════════════════════════════════════════╝");
     println!();
 
-    // 加载配置
     let config = node_detect::NexusConfig::load();
     let rpc_url = format!("http://127.0.0.1:8332");
     let rpc_user = config.rpc_user.clone();
     let rpc_pass = config.rpc_pass.clone();
 
-    // 加载状态
     let (indexer, scan_height) = load_state();
     println!("  Loaded state: {} mints, scan height: {}", indexer.mints.len(), scan_height);
 
     let state = Arc::new(AppState {
         indexer: Mutex::new(indexer),
         scan_height: Mutex::new(scan_height),
+        cache: RwLock::new(ResponseCache::empty()),
         rpc_url: rpc_url.clone(),
         rpc_user: rpc_user.clone(),
         rpc_pass: rpc_pass.clone(),
     });
+
+    // 启动时立即填充缓存
+    refresh_cache(&state);
+    println!("  [cache] Initial cache populated");
 
     // 后台扫描线程
     let scan_state = state.clone();
@@ -597,55 +613,44 @@ async fn main() -> std::io::Result<()> {
         println!("  [scanner] Starting from block {}...", GENESIS_BLOCK);
         loop {
             scan_blocks(&scan_state);
-            std::thread::sleep(std::time::Duration::from_secs(30)); // 每30秒扫一次
+            std::thread::sleep(std::time::Duration::from_secs(30));
         }
     });
 
-    // HTTP服务
     let http_state = state.clone();
     println!("  [http] Listening on http://0.0.0.0:3000");
-    println!();
-    println!("  API endpoints (v2.9.1):");
-    println!("    GET /api/status");
-    println!("    GET /api/balance/:address");
-    println!("    GET /api/mint/:seq");
-    println!("    GET /api/mints?page=1&limit=20");
-    println!("    GET /api/mints/recent          ← NEW");
-    println!("    GET /api/mints/address/:addr    ← NEW");
-    println!("    GET /api/holders");
-    println!("    GET /api/tx/:txid");
-    println!("    GET /api/mint/tx/:txid          ← NEW");
-    println!("    GET /api/health");
+    println!("  [http] Cache-Control: max-age=5, stale-while-revalidate=30");
     println!();
 
     HttpServer::new(move || {
         let cors = actix_cors::Cors::permissive();
         App::new()
             .wrap(cors)
-            .wrap(middleware::Logger::default())
-            .app_data(web::Data::new(http_state.clone()))
-            // ── 原有端点 (加 /api 前缀) ──
-            .route("/api/status",         web::get().to(api_status))
+            .wrap(middleware::Logger::new("%a %r %s %Dms"))
+            // ── 高频端点（从缓存读取，零锁） ──
+            .route("/api/status",   web::get().to(api_status))
+            .route("/api/holders",  web::get().to(api_holders))
+            .route("/api/mints/recent", web::get().to(api_mints_recent))
+            .route("/api/health",   web::get().to(api_health))
+            // ── 低频端点（仍需锁，但请求少） ──
             .route("/api/balance/{addr}", web::get().to(api_balance))
             .route("/api/mint/{seq}",     web::get().to(api_mint_by_seq))
             .route("/api/mints",          web::get().to(api_mints))
-            .route("/api/holders",        web::get().to(api_holders))
             .route("/api/tx/{txid}",      web::get().to(api_tx))
-            .route("/api/health",         web::get().to(api_health))
-            // ── 新增端点 (前端专用) ──
-            .route("/api/mints/recent",          web::get().to(api_mints_recent))
-            .route("/api/mints/address/{addr}",  web::get().to(api_mints_by_address))
-            .route("/api/mint/tx/{txid}",        web::get().to(api_mint_by_tx))
-            // ── 兼容旧路由 (无 /api 前缀，保持向后兼容) ──
-            .route("/status",            web::get().to(api_status))
-            .route("/balance/{addr}",    web::get().to(api_balance))
-            .route("/mint/{seq}",        web::get().to(api_mint_by_seq))
-            .route("/mints",             web::get().to(api_mints))
-            .route("/holders",           web::get().to(api_holders))
-            .route("/tx/{txid}",         web::get().to(api_tx))
-            .route("/health",            web::get().to(api_health))
+            .route("/api/mints/address/{addr}", web::get().to(api_mints_by_address))
+            .route("/api/mint/tx/{txid}",       web::get().to(api_mint_by_tx))
+            // ── 兼容旧路由 ──
+            .route("/status",   web::get().to(api_status))
+            .route("/holders",  web::get().to(api_holders))
+            .route("/health",   web::get().to(api_health))
+            .route("/balance/{addr}", web::get().to(api_balance))
+            .route("/mint/{seq}",     web::get().to(api_mint_by_seq))
+            .route("/mints",          web::get().to(api_mints))
+            .route("/tx/{txid}",      web::get().to(api_tx))
+            .app_data(web::Data::new(http_state.clone()))
     })
     .bind("0.0.0.0:3000")?
+    .workers(4)  // ★ 4个工作线程，扛更多并发
     .run()
     .await
 }
