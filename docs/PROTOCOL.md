@@ -378,17 +378,114 @@ Each full node proof is unique (derived from the minter's public key + block has
 
 ### 8.5 HTTP API Service
 
-The Indexer runs as a standalone HTTP service (`src/bin/indexer.rs`) built with **actix-web**, exposing 7 API endpoints for querying protocol state:
+The Indexer runs as a standalone HTTP service (`src/bin/indexer.rs`) built with **actix-web**, with CORS enabled for cross-origin frontend access. All endpoints use the `/api` prefix, with legacy non-prefixed routes maintained for backward compatibility.
 
-| Endpoint               | Description                            |
-| ---------------------- | -------------------------------------- |
-| `GET /status`          | Protocol status (total mints, supply remaining, block height) |
-| `GET /mint/{txid}`     | Lookup a specific mint by transaction ID |
-| `GET /mints`           | List recent mints (paginated)          |
-| `GET /holder/{address}`| Query NXS balance for an address       |
-| `GET /holders`         | Holder ranking (top holders)           |
-| `GET /supply`          | Current circulating supply             |
-| `GET /health`          | Service health check                   |
+#### Core Endpoints
+
+| Endpoint                       | Method | Description                                              |
+| ------------------------------ | ------ | -------------------------------------------------------- |
+| `GET /api/status`              | GET    | Protocol status: total supply, minted, holders, mint fee, mints remaining, scan height |
+| `GET /api/balance/{address}`   | GET    | Query NXS balance for a specific address                 |
+| `GET /api/mint/{seq}`          | GET    | Lookup a specific mint by sequence number                |
+| `GET /api/mints?page=1&limit=20` | GET | Paginated mint list (oldest first, max 100 per page)     |
+| `GET /api/holders`             | GET    | Holder ranking (top 100), sorted by balance descending. Returns `address`, `balance`, and `mint_count` per holder |
+| `GET /api/tx/{txid}`           | GET    | Lookup a specific mint by reveal transaction ID          |
+| `GET /api/health`              | GET    | Service health check: status, protocol name, version, scan height |
+
+#### Frontend Endpoints
+
+These endpoints were added in v2.9.1 to support the web frontend at `bitcoinexus.xyz`:
+
+| Endpoint                          | Method | Description                                              |
+| --------------------------------- | ------ | -------------------------------------------------------- |
+| `GET /api/mints/recent`           | GET    | Recent mints (latest 20, newest first). Returns `seq`, `address`, `amount`, `reveal_txid`, `block_height` per mint |
+| `GET /api/mints/address/{address}`| GET    | All mints for a specific address (newest first), plus `balance` and `mint_count`. Used by wallet connect auto-lookup |
+| `GET /api/mint/tx/{txid}`         | GET    | Lookup mint by reveal txid, returns frontend-compatible format with `mints` array |
+
+#### Response Format Examples
+
+**`GET /api/status`**
+```json
+{
+  "complete": false,
+  "holders": 1,
+  "mint_amount_per_tx": 500,
+  "mint_fee_sats": 5000,
+  "minted": 3000,
+  "mints_remaining": 41994,
+  "next_seq": 7,
+  "remaining": 20997000,
+  "scan_height": 942153,
+  "total_mints": 42000,
+  "total_supply": 21000000
+}
+```
+
+**`GET /api/holders`**
+```json
+{
+  "total_holders": 1,
+  "holders": [
+    {
+      "address": "bc1prh30dts9mn738hxz59v58z4cxutphrxfntfl8rxlh8fr2mhtc67sjy3t6z",
+      "balance": 3000,
+      "mint_count": 6
+    }
+  ]
+}
+```
+
+**`GET /api/mints/recent`**
+```json
+{
+  "mints": [
+    {
+      "seq": 6,
+      "address": "bc1prh30dt...jy3t6z",
+      "amount": 500,
+      "reveal_txid": "0780b156...81a7a5",
+      "block_height": 942135
+    }
+  ],
+  "total": 6
+}
+```
+
+**`GET /api/mints/address/{address}`**
+```json
+{
+  "address": "bc1prh30dt...jy3t6z",
+  "balance": 3000,
+  "mint_count": 6,
+  "mints": [
+    {
+      "seq": 6,
+      "address": "bc1prh30dt...jy3t6z",
+      "amount": 500,
+      "reveal_txid": "0780b156...81a7a5",
+      "block_height": 942135
+    }
+  ]
+}
+```
+
+**`GET /api/health`**
+```json
+{
+  "status": "ok",
+  "protocol": "NEXUS",
+  "version": "2.9.1",
+  "scan_height": 942153
+}
+```
+
+#### Backward Compatibility
+
+All endpoints are also available without the `/api` prefix (e.g., `GET /status`, `GET /holders`) for backward compatibility with existing integrations. New integrations should use the `/api`-prefixed routes.
+
+#### CORS
+
+The Indexer uses `actix_cors::Cors::permissive()` to allow cross-origin requests from the web frontend. This enables `bitcoinexus.xyz` (or any domain) to query the API at `api.bitcoinexus.xyz` without browser restrictions.
 
 API endpoint: https://api.bitcoinexus.xyz
 
@@ -509,7 +606,7 @@ nexus-protocol/
 │   ├── node_detect.rs   # Auto-detect Bitcoin node + path management
 │   ├── ui.rs            # Terminal UI with color
 │   └── bin/
-│       └── indexer.rs   # Indexer HTTP service (actix-web, 7 API endpoints)
+│       └── indexer.rs   # Indexer HTTP service (actix-web, 10 API endpoints + CORS)
 ├── scripts/
 │   └── wallet_gen.py    # BIP39/86/84/49 wallet generator (bip_utils)
 ├── docs/
@@ -614,12 +711,16 @@ The Reactor can mint multiple NXS tokens in one session. Each mint uses a differ
 **Q: Will batch minting burn my inscriptions or Runes?**
 No. The Reactor classifies every UTXO before use. Outputs ≤ 546 sats and known protocol-bound UTXOs are automatically locked and never selected as inputs.
 
+**Q: Is there a web frontend?**
+Yes. The protocol dashboard is live at [bitcoinexus.xyz](https://bitcoinexus.xyz) with real-time minting progress, holder leaderboard, recent mint feed, address/transaction lookup, and wallet connection support (UniSat, OKX Wallet, Xverse). The frontend queries the Indexer API at `api.bitcoinexus.xyz`. Note: the frontend is for viewing only — minting still requires a full node and the NEXUS Reactor CLI.
+
 ---
 
 ## Links
 
+- **Website**: [bitcoinexus.xyz](https://bitcoinexus.xyz)
 - **GitHub**: [github.com/btcnexus/nexus-protocol](https://github.com/btcnexus/nexus-protocol)
-- **API**: [api.bitcoinexus.xyz](https://api.bitcoinexus.xyz/status)
+- **API**: [api.bitcoinexus.xyz/api/status](https://api.bitcoinexus.xyz/api/status)
 
 ---
 
