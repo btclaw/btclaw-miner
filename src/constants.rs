@@ -20,6 +20,10 @@ pub const TOTAL_MINTS: u32 = 42_000;
 /// 铸造费 (satoshis)
 pub const MINT_FEE_SATS: u64 = 330;
 
+/// Reveal TX output[0] — 铸造产生的 token UTXO 面值 (satoshis)
+/// 铭文/协议资产的载体, 铸造后永久锁定不可花费
+pub const TOKEN_OUTPUT_SATS: u64 = 330;
+
 /// 项目方收费地址 (部署前替换为你的真实Taproot地址)
 #[cfg(not(feature = "regtest"))]
 pub const FEE_ADDRESS: &str = "bc1p8d6a2pu8hdpk9tq3tt64ys2947e4hgn6j5msgqaycptj08xgvrpqqtd98h";
