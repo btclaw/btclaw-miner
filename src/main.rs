@@ -586,7 +586,7 @@ fn menu_mainnet_mint() {
             let estimated_witness_len: u64 = 280;
             let reveal_vsize: u64 = 300 + (estimated_witness_len / 4);
             let reveal_fee = (reveal_vsize as f64 * fee_rate_f).ceil() as u64;
-            let commit_output_value = 330 + MINT_FEE_SATS + reveal_fee;
+            let commit_output_value = TOKEN_OUTPUT_SATS + MINT_FEE_SATS + reveal_fee;
             let commit_fee_single = ((COMMIT_VSIZE_BASE + COMMIT_VSIZE_PER_INPUT + COMMIT_VSIZE_PER_OUTPUT) as f64 * fee_rate_f).ceil() as u64;
             let cost_per_mint = commit_output_value + commit_fee_single;
 
@@ -881,7 +881,7 @@ fn execute_mint(
     let opreturn_script = transaction::build_opreturn_script(&interlock.opreturn_bytes);
     let reveal_vsize: u64 = 300 + (interlock.witness_json.len() as u64 / 4);
     let reveal_fee = (reveal_vsize as f64 * fee_rate).ceil() as u64;
-    let commit_output_value = 330 + MINT_FEE_SATS + reveal_fee;
+    let commit_output_value = TOKEN_OUTPUT_SATS + MINT_FEE_SATS + reveal_fee;
     let commit_vsize_estimate = COMMIT_VSIZE_BASE + COMMIT_VSIZE_PER_INPUT + COMMIT_VSIZE_PER_OUTPUT;
     let commit_fee_estimate = (commit_vsize_estimate as f64 * fee_rate).ceil() as u64;
     let total_needed = commit_output_value + commit_fee_estimate + DUST_LIMIT;
@@ -927,7 +927,7 @@ fn execute_mint(
     let mut reveal_tx = Transaction { version: Version::TWO, lock_time: LockTime::ZERO,
         input: vec![TxIn { previous_output: OutPoint::new(commit_txid, 0), script_sig: ScriptBuf::new(), sequence: Sequence::ENABLE_RBF_NO_LOCKTIME, witness: Witness::new() }],
         output: vec![
-            TxOut { value: Amount::from_sat(330), script_pubkey: minter_address.script_pubkey() },
+            TxOut { value: Amount::from_sat(TOKEN_OUTPUT_SATS), script_pubkey: minter_address.script_pubkey() },
             TxOut { value: Amount::from_sat(MINT_FEE_SATS), script_pubkey: fee_addr.script_pubkey() },
             TxOut { value: Amount::ZERO, script_pubkey: ScriptBuf::from_bytes(opreturn_script) },
         ],
@@ -954,7 +954,7 @@ fn execute_mint(
     broadcast(rpc_url, rpc_user, rpc_pass, &commit_tx)?; println!("✅ {}", commit_txid);
     print!("    Broadcasting Reveal... "); io::stdout().flush().unwrap();
     broadcast(rpc_url, rpc_user, rpc_pass, &reveal_tx)?; println!("✅ {}", reveal_txid);
-    utxo_mgr.record_mint(&reveal_txid.to_string(), 0, 330);
+    utxo_mgr.record_mint(&reveal_txid.to_string(), 0, TOKEN_OUTPUT_SATS);
     if change_value > DUST_LIMIT {
         utxo_mgr.record_change(&commit_txid.to_string(), 1, change_value);
         println!("    Change recorded: {}:{} ({} sats)", &commit_txid.to_string()[..12], 1, change_value);
@@ -1007,7 +1007,7 @@ fn execute_batch_mint(
     let estimated_witness_len: u64 = 280;
     let reveal_vsize: u64 = 300 + (estimated_witness_len / 4);
     let reveal_fee = (reveal_vsize as f64 * fee_rate).ceil() as u64;
-    let commit_output_value = 330 + MINT_FEE_SATS + reveal_fee;
+    let commit_output_value = TOKEN_OUTPUT_SATS + MINT_FEE_SATS + reveal_fee;
     let commit_fee_single = ((COMMIT_VSIZE_BASE + COMMIT_VSIZE_PER_INPUT + COMMIT_VSIZE_PER_OUTPUT) as f64 * fee_rate).ceil() as u64;
     let total_needed_all = (commit_output_value + commit_fee_single) * count as u64 + DUST_LIMIT;
 
@@ -1134,7 +1134,7 @@ fn execute_batch_mint(
                 script_sig: ScriptBuf::new(), sequence: Sequence::ENABLE_RBF_NO_LOCKTIME, witness: Witness::new(),
             }],
             output: vec![
-                TxOut { value: Amount::from_sat(330), script_pubkey: minter_address.script_pubkey() },
+                TxOut { value: Amount::from_sat(TOKEN_OUTPUT_SATS), script_pubkey: minter_address.script_pubkey() },
                 TxOut { value: Amount::from_sat(MINT_FEE_SATS), script_pubkey: fee_addr.script_pubkey() },
                 TxOut { value: Amount::ZERO, script_pubkey: ScriptBuf::from_bytes(opreturn_script) },
             ],
@@ -1188,7 +1188,7 @@ fn execute_batch_mint(
         }
 
         // 记录 UTXO
-        utxo_mgr.record_mint(&reveal_txid.to_string(), 0, 330);
+        utxo_mgr.record_mint(&reveal_txid.to_string(), 0, TOKEN_OUTPUT_SATS);
         if change_value > DUST_LIMIT {
             utxo_mgr.record_change(&commit_txid.to_string(), 1, change_value);
         }
