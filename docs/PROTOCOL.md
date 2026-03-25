@@ -619,7 +619,7 @@ No. The Reactor classifies every UTXO before use. Outputs ≤ 546 sats and known
 ## Links
 
 - **GitHub**: [github.com/btcnexus/nexus-protocol](https://github.com/btcnexus/nexus-protocol)
-- **API**: *(To be announced at mainnet launch)*
+- **API**: [api.bitcoinexus.xyz](https://api.bitcoinexus.xyz/status)
 
 ---
 
