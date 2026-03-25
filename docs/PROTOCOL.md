@@ -390,7 +390,7 @@ The Indexer runs as a standalone HTTP service (`src/bin/indexer.rs`) built with 
 | `GET /supply`          | Current circulating supply             |
 | `GET /health`          | Service health check                   |
 
-API endpoint will be announced at mainnet launch.
+API endpoint: https://api.bitcoinexus.xyz
 
 ---
 
