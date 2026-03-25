@@ -1,15 +1,17 @@
-/// NEXUS Indexer Server — 扫链 + REST API
+/// NEXUS Indexer Server v2.9.1 — 扫链 + REST API
 ///
 /// 扫描BTC区块链，找到所有NEXUS铸造交易，验证7条规则，提供HTTP查询
 ///
 /// API端点:
-///   GET /status          — 铸造进度、供应量、持有者数
-///   GET /balance/:addr   — 地址NXS余额
-///   GET /mint/:seq       — 按序号查铸造记录
-///   GET /mints?page=1&limit=20 — 分页铸造列表
-///   GET /holders         — 持有者排行（前100）
-///   GET /tx/:txid        — 按txid查铸造记录
-///   GET /health          — 健康检查
+///   GET /api/status              — 铸造进度、供应量、持有者数
+///   GET /api/balance/:addr       — 地址NXS余额
+///   GET /api/mint/:seq           — 按序号查铸造记录
+///   GET /api/mints?page=1&limit=20 — 分页铸造列表
+///   GET /api/mints/recent        — 最近铸造记录（前端用，最新20条）
+///   GET /api/mints/address/:addr — 按地址查铸造记录（前端查询 + 钱包连接后自动查）
+///   GET /api/holders             — 持有者排行（前100）
+///   GET /api/tx/:txid            — 按txid查铸造记录
+///   GET /api/health              — 健康检查
 
 use std::sync::{Arc, Mutex};
 use std::collections::HashMap;
@@ -370,7 +372,7 @@ fn light_validate(indexer: &Indexer, tx: &CandidateTx) -> Result<MintRecord, Str
 const GENESIS_BLOCK: u32 = 941890;
 
 // ═══════════════════════════════════════════
-//  HTTP API
+//  HTTP API — 原有端点 (路由加 /api 前缀)
 // ═══════════════════════════════════════════
 
 async fn api_status(data: web::Data<Arc<AppState>>) -> HttpResponse {
@@ -433,8 +435,18 @@ async fn api_mints(data: web::Data<Arc<AppState>>, query: web::Query<PageQuery>)
 
 async fn api_holders(data: web::Data<Arc<AppState>>) -> HttpResponse {
     let indexer = data.indexer.lock().unwrap();
-    let mut holders: Vec<_> = indexer.balances.iter()
-        .map(|(addr, &bal)| serde_json::json!({"address": addr, "balance": bal}))
+    let mut holders: Vec<serde_json::Value> = indexer.balances.iter()
+        .map(|(addr, &bal)| {
+            // 计算该地址的铸造次数（前端排行榜用）
+            let mint_count = indexer.mints.iter()
+                .filter(|m| m.address == *addr)
+                .count();
+            serde_json::json!({
+                "address": addr,
+                "balance": bal,
+                "mint_count": mint_count,
+            })
+        })
         .collect();
     holders.sort_by(|a, b| b["balance"].as_u64().cmp(&a["balance"].as_u64()));
     holders.truncate(100);
@@ -454,12 +466,97 @@ async fn api_tx(data: web::Data<Arc<AppState>>, path: web::Path<String>) -> Http
     }
 }
 
-async fn api_health() -> HttpResponse {
+async fn api_health(data: web::Data<Arc<AppState>>) -> HttpResponse {
+    let scan_h = *data.scan_height.lock().unwrap();
     HttpResponse::Ok().json(serde_json::json!({
         "status": "ok",
         "protocol": "NEXUS",
-        "version": "2.8",
+        "version": "2.9.1",
+        "scan_height": scan_h,
     }))
+}
+
+// ═══════════════════════════════════════════
+//  HTTP API — 新增端点 (前端专用)
+// ═══════════════════════════════════════════
+
+/// GET /api/mints/recent — 最近铸造记录（最新在前，前端实时流用）
+async fn api_mints_recent(data: web::Data<Arc<AppState>>) -> HttpResponse {
+    let indexer = data.indexer.lock().unwrap();
+
+    // 取最后20条，倒序（最新在前）
+    let total = indexer.mints.len();
+    let start = if total > 20 { total - 20 } else { 0 };
+    let mut recent: Vec<_> = indexer.mints[start..].to_vec();
+    recent.reverse();
+
+    // 转换为前端需要的格式
+    let mints: Vec<serde_json::Value> = recent.iter().map(|m| {
+        serde_json::json!({
+            "seq": m.seq,
+            "address": m.address,
+            "amount": m.amount,
+            "reveal_txid": m.txid,
+            "block_height": m.block_height,
+        })
+    }).collect();
+
+    HttpResponse::Ok().json(serde_json::json!({
+        "mints": mints,
+        "total": total,
+    }))
+}
+
+/// GET /api/mints/address/{addr} — 按地址查铸造记录（钱包连接后自动查询用）
+async fn api_mints_by_address(data: web::Data<Arc<AppState>>, path: web::Path<String>) -> HttpResponse {
+    let addr = path.into_inner();
+    let indexer = data.indexer.lock().unwrap();
+
+    let mut mints: Vec<serde_json::Value> = indexer.mints.iter()
+        .filter(|m| m.address == addr)
+        .map(|m| {
+            serde_json::json!({
+                "seq": m.seq,
+                "address": m.address,
+                "amount": m.amount,
+                "reveal_txid": m.txid,
+                "block_height": m.block_height,
+            })
+        })
+        .collect();
+
+    // 最新在前
+    mints.reverse();
+
+    let balance = indexer.balances.get(&addr).copied().unwrap_or(0);
+
+    HttpResponse::Ok().json(serde_json::json!({
+        "address": addr,
+        "balance": balance,
+        "mint_count": mints.len(),
+        "mints": mints,
+    }))
+}
+
+/// GET /api/mint/tx/{txid} — 按txid查铸造记录（前端查询框用，包装成前端需要的格式）
+async fn api_mint_by_tx(data: web::Data<Arc<AppState>>, path: web::Path<String>) -> HttpResponse {
+    let txid = path.into_inner();
+    let indexer = data.indexer.lock().unwrap();
+    match indexer.mints.iter().find(|m| m.txid == txid) {
+        Some(m) => {
+            HttpResponse::Ok().json(serde_json::json!({
+                "mints": [{
+                    "seq": m.seq,
+                    "address": m.address,
+                    "amount": m.amount,
+                    "reveal_txid": m.txid,
+                    "block_height": m.block_height,
+                }],
+                "total": 1,
+            }))
+        }
+        None => HttpResponse::NotFound().json(serde_json::json!({"error": "not found"})),
+    }
 }
 
 // ═══════════════════════════════════════════
@@ -470,8 +567,9 @@ async fn api_health() -> HttpResponse {
 async fn main() -> std::io::Result<()> {
     println!();
     println!("  ╔════════════════════════════════════════╗");
-    println!("  ║  NEXUS Indexer v2.8                    ║");
+    println!("  ║  NEXUS Indexer v2.9.1                  ║");
     println!("  ║  Scanning Bitcoin blockchain...        ║");
+    println!("  ║  + Web Frontend API endpoints          ║");
     println!("  ╚════════════════════════════════════════╝");
     println!();
 
@@ -507,14 +605,17 @@ async fn main() -> std::io::Result<()> {
     let http_state = state.clone();
     println!("  [http] Listening on http://0.0.0.0:3000");
     println!();
-    println!("  API endpoints:");
-    println!("    GET /status");
-    println!("    GET /balance/:address");
-    println!("    GET /mint/:seq");
-    println!("    GET /mints?page=1&limit=20");
-    println!("    GET /holders");
-    println!("    GET /tx/:txid");
-    println!("    GET /health");
+    println!("  API endpoints (v2.9.1):");
+    println!("    GET /api/status");
+    println!("    GET /api/balance/:address");
+    println!("    GET /api/mint/:seq");
+    println!("    GET /api/mints?page=1&limit=20");
+    println!("    GET /api/mints/recent          ← NEW");
+    println!("    GET /api/mints/address/:addr    ← NEW");
+    println!("    GET /api/holders");
+    println!("    GET /api/tx/:txid");
+    println!("    GET /api/mint/tx/:txid          ← NEW");
+    println!("    GET /api/health");
     println!();
 
     HttpServer::new(move || {
@@ -523,13 +624,26 @@ async fn main() -> std::io::Result<()> {
             .wrap(cors)
             .wrap(middleware::Logger::default())
             .app_data(web::Data::new(http_state.clone()))
-            .route("/status", web::get().to(api_status))
-            .route("/balance/{addr}", web::get().to(api_balance))
-            .route("/mint/{seq}", web::get().to(api_mint_by_seq))
-            .route("/mints", web::get().to(api_mints))
-            .route("/holders", web::get().to(api_holders))
-            .route("/tx/{txid}", web::get().to(api_tx))
-            .route("/health", web::get().to(api_health))
+            // ── 原有端点 (加 /api 前缀) ──
+            .route("/api/status",         web::get().to(api_status))
+            .route("/api/balance/{addr}", web::get().to(api_balance))
+            .route("/api/mint/{seq}",     web::get().to(api_mint_by_seq))
+            .route("/api/mints",          web::get().to(api_mints))
+            .route("/api/holders",        web::get().to(api_holders))
+            .route("/api/tx/{txid}",      web::get().to(api_tx))
+            .route("/api/health",         web::get().to(api_health))
+            // ── 新增端点 (前端专用) ──
+            .route("/api/mints/recent",          web::get().to(api_mints_recent))
+            .route("/api/mints/address/{addr}",  web::get().to(api_mints_by_address))
+            .route("/api/mint/tx/{txid}",        web::get().to(api_mint_by_tx))
+            // ── 兼容旧路由 (无 /api 前缀，保持向后兼容) ──
+            .route("/status",            web::get().to(api_status))
+            .route("/balance/{addr}",    web::get().to(api_balance))
+            .route("/mint/{seq}",        web::get().to(api_mint_by_seq))
+            .route("/mints",             web::get().to(api_mints))
+            .route("/holders",           web::get().to(api_holders))
+            .route("/tx/{txid}",         web::get().to(api_tx))
+            .route("/health",            web::get().to(api_health))
     })
     .bind("0.0.0.0:3000")?
     .run()
