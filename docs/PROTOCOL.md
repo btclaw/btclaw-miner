@@ -1,4 +1,4 @@
-# NEXUS Protocol Specification v2.9.1
+# NEXUS Protocol Specification v2.9.2
 
 ### The first dual-layer interlocking token on Bitcoin L1.
 
@@ -19,6 +19,14 @@ Every Bitcoin token protocol so far has used **one** data layer:
 
 NEXUS is the first protocol that requires **both layers simultaneously**, with each layer containing the SHA-256 hash of the other. No existing tool — ord, rune cli, or any web minter — can construct this transaction. Only the NEXUS Reactor can.
 
+NEXUS defines three on-chain operations, each using the appropriate data layer(s):
+
+| Operation    | Data Layer                        | Full Node Required? | Reason                     |
+| ------------ | --------------------------------- | ------------------- | -------------------------- |
+| **Deploy**   | Witness + OP_RETURN               | Yes (deployer only) | Genesis inscription        |
+| **Mint**     | Witness + OP_RETURN (interlocked) | Yes                 | Full node proof in Witness |
+| **Transfer** | OP_RETURN only                    | No                  | Signature = ownership      |
+
 ---
 
 ## 2. Token Parameters
@@ -38,9 +46,9 @@ NEXUS is the first protocol that requires **both layers simultaneously**, with e
 
 ## 3. Transaction Structure
 
-A single NEXUS mint consists of two on-chain transactions: **Commit** and **Reveal**.
-
 ### 3.1 Overview
+
+A single NEXUS mint consists of two on-chain transactions: **Commit** and **Reveal**.
 
 ```
 ┌─────────────────────────────────────────────────────────┐
@@ -137,6 +145,66 @@ NEXUS uses the standard Ordinals two-phase inscription pattern:
 1. **Commit TX**: Sends BTC to a Taproot address whose script tree contains the inscription envelope (JSON payload). Supports multiple UTXO inputs with automatic change output.
 2. **Reveal TX**: Spends the Commit output via the script path, exposing the inscription on-chain. The Reveal TX also attaches the OP_RETURN output and the protocol fee output.
 
+### 3.7 Deploy Transaction
+
+The Deploy transaction creates the NEXUS protocol on Bitcoin. It is executed exactly once and defines all token parameters permanently on-chain. No further deploys are possible.
+
+#### Deploy Witness Layer
+
+Content-Type: `application/nexus-deploy`
+
+```json
+{
+  "p": "nexus",
+  "op": "deploy",
+  "tick": "NXS",
+  "max": 21000000,
+  "lim": 500,
+  "total_mints": 42000,
+  "fee": 5000,
+  "pk": "d2275bb54312700c0a0453e43b7ffde25871d898097c03539128c258604259ed",
+  "opr": "38687f4a3ea51169ef8ab2139f3131d649b6bfb8c86761832..."
+}
+```
+
+| Field         | Type   | Description                                    |
+| ------------- | ------ | ---------------------------------------------- |
+| `p`           | string | Protocol identifier. Must be `"nexus"`.        |
+| `op`          | string | Operation. Must be `"deploy"`.                 |
+| `tick`        | string | Token ticker symbol. `"NXS"`.                  |
+| `max`         | int    | Maximum total supply: 21,000,000.              |
+| `lim`         | int    | Tokens per mint: 500.                          |
+| `total_mints` | int    | Maximum number of mints: 42,000.               |
+| `fee`         | int    | Protocol fee per mint in sats: 5,000.          |
+| `pk`          | string | Deployer's x-only public key (64 hex chars).   |
+| `opr`         | string | SHA-256 hash of the OP_RETURN payload.         |
+
+#### Deploy OP_RETURN Layer
+
+```
+NXS:DEPLOY:NXS:max=21000000:lim=500:fee=5000
+```
+
+Human-readable ASCII string defining all protocol parameters.
+
+#### Deploy Transaction Outputs
+
+| Output   | Value    | Purpose                          |
+| -------- | -------- | -------------------------------- |
+| `[0]`    | 330 sats | Deployer's address               |
+| `[1]`    | 0 sats   | OP_RETURN (protocol parameters)  |
+
+#### On-Chain Reference
+
+| Transaction | TXID |
+| ----------- | ---- |
+| Commit TX   | `c72a693c52db9764d94167876ee5a9889b30f5e5cd183e9d03b96add5136f7fa` |
+| Reveal TX   | `450ae05b1e066a51a9fa3ce17b4781442eb90e367fcf5ba7e9753c7ecb465124` |
+| Deployer    | `bc1prup3j0l8p832kcxx02cvjj52s6etu20gvk0ppd4f5zsqed4kjawsfx800y` |
+| Deployer PK | `d2275bb54312700c0a0453e43b7ffde25871d898097c03539128c258604259ed` |
+
+The Deploy transaction follows the same Commit + Reveal pattern as Mint (§3.6), but uses `application/nexus-deploy` as the inscription content type instead of `application/nexus-mint`.
+
 ---
 
 ## 4. Full Node Proof
@@ -195,7 +263,7 @@ Mint #2: block_height - 1  (previous)   → unique seed → unique proof
 Mint #3: block_height - 2               → unique seed → unique proof
 ```
 
-Different block hashes produce entirely different challenge heights and proof outputs. The Indexer's used-proof table sees each as a distinct entry — no replay conflict. 
+Different block hashes produce entirely different challenge heights and proof outputs. The Indexer's used-proof table sees each as a distinct entry — no replay conflict.
 
 ---
 
@@ -378,7 +446,7 @@ Each full node proof is unique (derived from the minter's public key + block has
 
 ### 8.5 HTTP API Service
 
-The Indexer runs as a standalone HTTP service (`src/bin/indexer.rs`) built with **actix-web**, with CORS enabled for cross-origin frontend access. All endpoints use the `/api` prefix, with legacy non-prefixed routes maintained for backward compatibility.
+The Indexer runs as a standalone HTTP service (`src/bin/indexer.rs`) built with **actix-web**, with a response cache layer (RwLock) for high-concurrency performance and CORS enabled for cross-origin frontend access. All endpoints use the `/api` prefix, with legacy non-prefixed routes maintained for backward compatibility.
 
 #### Core Endpoints
 
@@ -394,98 +462,11 @@ The Indexer runs as a standalone HTTP service (`src/bin/indexer.rs`) built with 
 
 #### Frontend Endpoints
 
-These endpoints were added in v2.9.1 to support the web frontend at `bitcoinexus.xyz`:
-
 | Endpoint                          | Method | Description                                              |
 | --------------------------------- | ------ | -------------------------------------------------------- |
-| `GET /api/mints/recent`           | GET    | Recent mints (latest 20, newest first). Returns `seq`, `address`, `amount`, `reveal_txid`, `block_height` per mint |
-| `GET /api/mints/address/{address}`| GET    | All mints for a specific address (newest first), plus `balance` and `mint_count`. Used by wallet connect auto-lookup |
-| `GET /api/mint/tx/{txid}`         | GET    | Lookup mint by reveal txid, returns frontend-compatible format with `mints` array |
-
-#### Response Format Examples
-
-**`GET /api/status`**
-```json
-{
-  "complete": false,
-  "holders": 1,
-  "mint_amount_per_tx": 500,
-  "mint_fee_sats": 5000,
-  "minted": 3000,
-  "mints_remaining": 41994,
-  "next_seq": 7,
-  "remaining": 20997000,
-  "scan_height": 942153,
-  "total_mints": 42000,
-  "total_supply": 21000000
-}
-```
-
-**`GET /api/holders`**
-```json
-{
-  "total_holders": 1,
-  "holders": [
-    {
-      "address": "bc1prh30dts9mn738hxz59v58z4cxutphrxfntfl8rxlh8fr2mhtc67sjy3t6z",
-      "balance": 3000,
-      "mint_count": 6
-    }
-  ]
-}
-```
-
-**`GET /api/mints/recent`**
-```json
-{
-  "mints": [
-    {
-      "seq": 6,
-      "address": "bc1prh30dt...jy3t6z",
-      "amount": 500,
-      "reveal_txid": "0780b156...81a7a5",
-      "block_height": 942135
-    }
-  ],
-  "total": 6
-}
-```
-
-**`GET /api/mints/address/{address}`**
-```json
-{
-  "address": "bc1prh30dt...jy3t6z",
-  "balance": 3000,
-  "mint_count": 6,
-  "mints": [
-    {
-      "seq": 6,
-      "address": "bc1prh30dt...jy3t6z",
-      "amount": 500,
-      "reveal_txid": "0780b156...81a7a5",
-      "block_height": 942135
-    }
-  ]
-}
-```
-
-**`GET /api/health`**
-```json
-{
-  "status": "ok",
-  "protocol": "NEXUS",
-  "version": "2.9.1",
-  "scan_height": 942153
-}
-```
-
-#### Backward Compatibility
-
-All endpoints are also available without the `/api` prefix (e.g., `GET /status`, `GET /holders`) for backward compatibility with existing integrations. New integrations should use the `/api`-prefixed routes.
-
-#### CORS
-
-The Indexer uses `actix_cors::Cors::permissive()` to allow cross-origin requests from the web frontend. This enables `bitcoinexus.xyz` (or any domain) to query the API at `api.bitcoinexus.xyz` without browser restrictions.
+| `GET /api/mints/recent`           | GET    | Recent mints (latest 20, newest first)                   |
+| `GET /api/mints/address/{address}`| GET    | All mints for a specific address, plus balance and mint_count |
+| `GET /api/mint/tx/{txid}`         | GET    | Lookup mint by reveal txid (frontend-compatible format)  |
 
 API endpoint: https://api.bitcoinexus.xyz
 
@@ -575,19 +556,21 @@ A minter must fund their Taproot address with at least **10,000 sats**:
 
 ## 11. Security Model
 
-| Attack Vector                | Defense                                                                          |
-| ---------------------------- | -------------------------------------------------------------------------------- |
-| API relay (no full node)     | Two-round 15s window. Local NVMe ~100ms vs remote API ~5–15s (timeout).          |
-| Pruned node disguise         | Direct disk read: blk files > 500GB + early files (`blk00000–00009`) must exist. |
-| Identity spoofing            | `pk` field bound to Taproot signing key + Indexer cross-check (Rule 5).          |
-| Proof replay                 | Used-proof deduplication table in Indexer (Rule 6).                              |
-| Interlock tampering          | Bidirectional SHA-256 verification; `pk` participates in hash (Rule 4).          |
-| Mint ordering manipulation   | Indexer assigns sequence by tx position in block — strict FCFS.                  |
-| Bitcoin Core 30.x encryption | Auto-detect XOR obfuscation key, transparent decrypt of blk files.               |
-| DoS (spam invalid proofs)    | Cheap checks first (fee, format, interlock) before expensive proof verification. |
-| Unlimited mint attempts      | Fixed `amt=500`, supply cap enforced at 42,000 mints, proof uniqueness.          |
-| Asset-bearing UTXO burn      | Five-layer UTXO classification; 330/546 sats outputs locked by default (§6).     |
-| Batch proof collision        | Each batch mint uses a different block height → unique proof hash (§4.5).        |
+| Attack Vector                   | Defense                                                                          |
+| ------------------------------- | -------------------------------------------------------------------------------- |
+| API relay (no full node)        | Two-round 15s window. Local NVMe ~100ms vs remote API ~5–15s (timeout).          |
+| Pruned node disguise            | Direct disk read: blk files > 500GB + early files (`blk00000–00009`) must exist. |
+| Identity spoofing               | `pk` field bound to Taproot signing key + Indexer cross-check (Rule 5).          |
+| Proof replay                    | Used-proof deduplication table in Indexer (Rule 6).                              |
+| Interlock tampering             | Bidirectional SHA-256 verification; `pk` participates in hash (Rule 4).          |
+| Mint ordering manipulation      | Indexer assigns sequence by tx position in block — strict FCFS.                  |
+| Bitcoin Core 30.x encryption    | Auto-detect XOR obfuscation key, transparent decrypt of blk files.               |
+| DoS (spam invalid proofs)       | Cheap checks first (fee, format, interlock) before expensive proof verification. |
+| Unlimited mint attempts         | Fixed `amt=500`, supply cap enforced at 42,000 mints, proof uniqueness.          |
+| Asset-bearing UTXO burn         | Five-layer UTXO classification; 330/546 sats outputs locked by default (§6).     |
+| Batch proof collision           | Each batch mint uses a different block height → unique proof hash (§4.5).        |
+| Transfer double-spend           | 3-block confirmation rule. Pending transfers lock sender's balance on broadcast. |
+| Transfer insufficient balance   | Indexer checks available_balance = total - locked before accepting transfer.     |
 
 ---
 
@@ -606,7 +589,7 @@ nexus-protocol/
 │   ├── node_detect.rs   # Auto-detect Bitcoin node + path management
 │   ├── ui.rs            # Terminal UI with color
 │   └── bin/
-│       └── indexer.rs   # Indexer HTTP service (actix-web, 10 API endpoints + CORS)
+│       └── indexer.rs   # Indexer HTTP service (actix-web, 10 API endpoints + cache layer)
 ├── scripts/
 │   └── wallet_gen.py    # BIP39/86/84/49 wallet generator (bip_utils)
 ├── docs/
@@ -679,7 +662,96 @@ Both layers cross-reference each other. The `pk` field binds the mint to the sig
 
 ---
 
-## 16. FAQ
+## 16. Transfer Protocol
+
+### 16.1 Design Rationale
+
+Mint requires the Witness inscription layer to embed the full node proof — this is the core innovation of NEXUS. Transfer, however, does not need to prove node ownership. The sender's Taproot signature already proves "I own this address and its NXS balance."
+
+Therefore, Transfer uses **only the OP_RETURN layer** — lightweight, cheap, and executable from any wallet without running a full node.
+
+### 16.2 Transaction Structure
+
+```
+┌─────────────────────────────────────────────────────┐
+│            NEXUS Transfer Transaction               │
+│                                                     │
+│  INPUT[0]: Sender's UTXO (Taproot signature)        │
+│            → Signature = proof of ownership          │
+│                                                     │
+│  OP_RETURN LAYER (ASCII readable)                   │
+│  ┌─────────────────────────────────────────┐        │
+│  │ NXS:TRANSFER:<amount>:to=<recipient>    │        │
+│  └─────────────────────────────────────────┘        │
+│                                                     │
+│  OUTPUT[0]: 330 sats  → recipient (new holder)      │
+│  OUTPUT[1]: OP_RETURN (transfer data)               │
+│  OUTPUT[2]: change    → sender (remaining BTC)      │
+└─────────────────────────────────────────────────────┘
+```
+
+### 16.3 OP_RETURN Format
+
+```
+NXS:TRANSFER:<amount>:to=<recipient_address>
+```
+
+| Segment         | Description                                          |
+| --------------- | ---------------------------------------------------- |
+| `NXS`           | Protocol magic prefix.                               |
+| `TRANSFER`      | Operation type.                                      |
+| `<amount>`      | Number of NXS tokens to transfer (integer).          |
+| `to=<address>`  | Recipient's Bitcoin address (Taproot `bc1p...`).     |
+
+Example:
+```
+NXS:TRANSFER:1000:to=bc1prh30dts9mn738hxz59v58z4cxutphrxfntfl8rxlh8fr2mhtc67sjy3t6z
+```
+
+### 16.4 Transaction Outputs
+
+| Output   | Value    | Purpose                            |
+| -------- | -------- | ---------------------------------- |
+| `[0]`    | 330 sats | Recipient's token-holding UTXO     |
+| `[1]`    | 0 sats   | OP_RETURN data carrier             |
+| `[2]`    | Variable | Change returned to sender          |
+
+### 16.5 Indexer Validation Rules (Transfer)
+
+| #  | Rule            | Description                                                                 |
+| -- | --------------- | --------------------------------------------------------------------------- |
+| 1  | **Format**      | OP_RETURN starts with `NXS:TRANSFER`, valid amount, valid `to=` address.    |
+| 2  | **Balance**     | Sender has sufficient available NXS balance (amount ≤ available balance).   |
+| 3  | **Signature**   | Transaction signed by sender's Taproot key (proves address ownership).      |
+| 4  | **Confirmation**| 3 block confirmations required before balances update.                      |
+
+### 16.6 Three-Block Confirmation Rule
+
+Transfer balance updates require 3 block confirmations to prevent issues from blockchain reorganizations:
+
+```
+TX Broadcast     → Sender's NXS locked (unavailable for other transfers)
+1 Confirmation   → TX in block. Waiting.
+2 Confirmations  → Reorg protection. Waiting.
+3 Confirmations  → FINALIZED. Sender balance decremented, recipient credited.
+```
+
+The lock-on-broadcast mechanism prevents double-spending: once a transfer TX enters the mempool, the transferred amount is immediately deducted from the sender's available balance, even before block inclusion.
+
+### 16.7 Available Balance Calculation
+
+```
+available_balance = total_balance - locked_in_pending_transfers - locked_in_open_orders
+```
+
+A sender cannot transfer or list more NXS than their available balance. This prevents:
+- Transferring the same NXS to multiple recipients
+- Listing NXS for sale while simultaneously transferring it
+- Spending NXS that is locked in an open market order
+
+---
+
+## 17. FAQ
 
 **Q: Why require a full node to mint?**
 The barrier IS the value. Bitcoin was meant to be run by node operators, not website clickers. If you're not willing to dedicate 850 GB to Bitcoin, you're not the target audience.
@@ -714,6 +786,15 @@ No. The Reactor classifies every UTXO before use. Outputs ≤ 546 sats and known
 **Q: Is there a web frontend?**
 Yes. The protocol dashboard is live at [bitcoinexus.xyz](https://bitcoinexus.xyz) with real-time minting progress, holder leaderboard, recent mint feed, address/transaction lookup, and wallet connection support (UniSat, OKX Wallet, Xverse). The frontend queries the Indexer API at `api.bitcoinexus.xyz`. Note: the frontend is for viewing only — minting still requires a full node and the NEXUS Reactor CLI.
 
+**Q: How does Transfer work without the Witness layer?**
+Transfer only needs OP_RETURN because it doesn't require a full node proof. The Taproot signature proves ownership of the sending address. The Indexer verifies the sender has sufficient balance and the signature is valid.
+
+**Q: Why 3 block confirmations for transfers?**
+To protect against blockchain reorganizations. In a reorg, a confirmed transfer could be reversed. Waiting for 3 confirmations makes this extremely unlikely. During the waiting period, the transferred NXS is locked to prevent double-spending.
+
+**Q: Can I transfer NXS from any wallet?**
+Yes. Transfer only requires creating a standard Bitcoin transaction with an OP_RETURN output. Any Taproot-compatible wallet (UniSat, OKX Wallet, Xverse) can construct this transaction through the NEXUS web frontend.
+
 ---
 
 ## Links
@@ -721,6 +802,7 @@ Yes. The protocol dashboard is live at [bitcoinexus.xyz](https://bitcoinexus.xyz
 - **Website**: [bitcoinexus.xyz](https://bitcoinexus.xyz)
 - **GitHub**: [github.com/btcnexus/nexus-protocol](https://github.com/btcnexus/nexus-protocol)
 - **API**: [api.bitcoinexus.xyz/api/status](https://api.bitcoinexus.xyz/api/status)
+- **Protocol Docs**: [bitcoinexus.xyz/protocol.html](https://bitcoinexus.xyz/protocol.html)
 
 ---
 
