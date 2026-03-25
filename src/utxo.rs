@@ -447,7 +447,7 @@ mod tests {
     #[test]
     fn classify_locks_dust() {
         let mgr = UtxoManager::load();
-        let utxo = make_utxo("aaa", 0, 330);
+        let utxo = make_utxo("aaa", 0, TOKEN_OUTPUT_SATS);
         assert_eq!(mgr.classify(&utxo), UtxoClass::LockedDust);
 
         let utxo2 = make_utxo("bbb", 0, 546);
@@ -471,8 +471,8 @@ mod tests {
     #[test]
     fn classify_locks_recorded_mint() {
         let mut mgr = UtxoManager::load();
-        mgr.record_mint("eee", 0, 330);
-        let utxo = make_utxo("eee", 0, 330);
+        mgr.record_mint("eee", 0, TOKEN_OUTPUT_SATS);
+        let utxo = make_utxo("eee", 0, TOKEN_OUTPUT_SATS);
         assert_eq!(mgr.classify(&utxo), UtxoClass::LockedNxsMint);
     }
 
@@ -517,9 +517,9 @@ mod tests {
     #[test]
     fn select_skips_locked() {
         let mut mgr = UtxoManager::load();
-        mgr.record_mint("locked", 0, 330);
+        mgr.record_mint("locked", 0, TOKEN_OUTPUT_SATS);
         let utxos = vec![
-            make_utxo("locked", 0, 330),  // 被锁定
+            make_utxo("locked", 0, TOKEN_OUTPUT_SATS),  // 被锁定
             make_utxo("good", 0, 5000),   // 可用
         ];
         let (selected, _) = mgr.select_for_commit(&utxos, 1500).unwrap();
@@ -530,10 +530,10 @@ mod tests {
     #[test]
     fn pre_check_reports_correctly() {
         let mut mgr = UtxoManager::load();
-        mgr.record_mint("mint1", 0, 330);
+        mgr.record_mint("mint1", 0, TOKEN_OUTPUT_SATS);
         mgr.record_change("change1", 1, 620);
         let utxos = vec![
-            make_utxo("mint1", 0, 330),     // locked
+            make_utxo("mint1", 0, TOKEN_OUTPUT_SATS),     // locked
             make_utxo("change1", 1, 620),   // known change
             make_utxo("big", 0, 5000),      // spendable
             make_utxo("small", 0, 800),     // gray zone
