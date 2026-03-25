@@ -295,6 +295,38 @@ Try the full mint cycle in 10 minutes without real BTC:
 
 ---
 
+## Web Dashboard
+
+The protocol dashboard is live at **[bitcoinexus.xyz](https://bitcoinexus.xyz)** with:
+
+- **Real-time minting progress** — progress bar, percentage, remaining mints
+- **Holder leaderboard** — top holders ranked by NXS balance
+- **Recent mint feed** — latest minting activity with transaction links
+- **Address / TX lookup** — search by Bitcoin address or transaction hash
+- **Wallet connect** — UniSat, OKX Wallet, Xverse support
+- **Bilingual** — English / Chinese toggle
+
+The frontend is for **viewing only** — minting still requires a full node and the NEXUS Reactor CLI.
+
+### API Endpoints
+
+The Indexer (`src/bin/indexer.rs`) serves a REST API at `api.bitcoinexus.xyz`:
+
+| Endpoint | Description |
+|----------|-------------|
+| `GET /api/status` | Protocol status (supply, minted, holders, scan height) |
+| `GET /api/balance/{address}` | NXS balance for an address |
+| `GET /api/mint/{seq}` | Lookup mint by sequence number |
+| `GET /api/mints?page=1&limit=20` | Paginated mint list |
+| `GET /api/mints/recent` | Latest 20 mints (newest first) |
+| `GET /api/mints/address/{address}` | All mints for an address + balance |
+| `GET /api/holders` | Top 100 holders ranked by balance |
+| `GET /api/tx/{txid}` | Lookup mint by reveal txid |
+| `GET /api/mint/tx/{txid}` | Lookup mint by txid (frontend format) |
+| `GET /api/health` | Service health check |
+
+---
+
 ## Architecture
 
 ```
@@ -308,7 +340,9 @@ nexus-protocol/
 │   ├── indexer.rs       # Transaction validation engine (7 rules + DoS prefilter)
 │   ├── utxo.rs          # UTXO safety classification + selection + record tracking
 │   ├── node_detect.rs   # Auto-detect Bitcoin node + path management
-│   └── ui.rs            # Terminal UI with color
+│   ├── ui.rs            # Terminal UI with color
+│   └── bin/
+│       └── indexer.rs   # Indexer HTTP service (actix-web, 10 API endpoints + CORS)
 ├── scripts/
 │   └── wallet_gen.py    # BIP39/86/84/49 wallet generator (bip_utils)
 ├── docs/
@@ -478,11 +512,16 @@ The Reactor can mint multiple NXS tokens in one session. Each mint uses a differ
 **Q: Will batch minting burn my inscriptions or Runes?**
 No. The Reactor classifies every UTXO before use. Outputs ≤ 546 sats and known protocol-bound UTXOs are automatically locked and never selected as inputs.
 
+**Q: Is there a web frontend?**
+Yes. The protocol dashboard is live at [bitcoinexus.xyz](https://bitcoinexus.xyz) with real-time minting progress, holder leaderboard, recent mint feed, address/transaction lookup, and wallet connection support (UniSat, OKX Wallet, Xverse). The frontend is for viewing only — minting still requires a full node and the NEXUS Reactor CLI.
+
 ---
 
 ## Links
 
+- **Website**: [bitcoinexus.xyz](https://bitcoinexus.xyz)
 - **GitHub**: [github.com/btcnexus/nexus-protocol](https://github.com/btcnexus/nexus-protocol)
+- **API**: [api.bitcoinexus.xyz/api/status](https://api.bitcoinexus.xyz/api/status)
 - **Protocol Spec**: [`docs/PROTOCOL.md`](docs/PROTOCOL.md)
 
 ---
