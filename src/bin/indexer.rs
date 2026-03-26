@@ -211,7 +211,7 @@ fn get_block_hash(client: &reqwest::blocking::Client, url: &str, user: &str, pas
 }
 
 fn get_block(client: &reqwest::blocking::Client, url: &str, user: &str, pass: &str, hash: &str) -> Result<serde_json::Value, String> {
-    rpc_json(client, url, user, pass, "getblock", &[serde_json::json!(hash), serde_json::json!(2)])
+    rpc_json(client, url, user, pass, "getblock", &[serde_json::json!(hash), serde_json::json!(3)])
 }
 
 fn get_raw_tx(client: &reqwest::blocking::Client, url: &str, user: &str, pass: &str, txid: &str) -> Result<serde_json::Value, String> {
@@ -343,8 +343,8 @@ fn parse_transfer(tx: &serde_json::Value, block_height: u32) -> Option<PendingTr
     let txid = tx["txid"].as_str()?.to_string();
     let vouts = tx["vout"].as_array()?;
 
-    // 1. 找 NXS:TRANSFER OP_RETURN
-    let mut transfer_text: Option<String> = None;
+    // 1. 找 NXS:TRANSFER OP_RETURN 并解析 amount
+    let mut transfer_amount: Option<u64> = None;
 
     for vout in vouts.iter() {
         let script_type = vout["scriptPubKey"]["type"].as_str().unwrap_or("");
@@ -363,7 +363,17 @@ fn parse_transfer(tx: &serde_json::Value, block_height: u32) -> Option<PendingTr
                     if data_start < script_bytes.len() {
                         if let Ok(text) = std::str::from_utf8(&script_bytes[data_start..]) {
                             if text.starts_with("NXS:TRANSFER:") {
-                                transfer_text = Some(text.to_string());
+                                // 支持两种格式:
+                                // 新: NXS:TRANSFER:500
+                                // 旧: NXS:TRANSFER:500:to=bc1p...
+                                let parts: Vec<&str> = text.splitn(4, ':').collect();
+                                if parts.len() >= 3 {
+                                    if let Ok(amt) = parts[2].parse::<u64>() {
+                                        if amt > 0 {
+                                            transfer_amount = Some(amt);
+                                        }
+                                    }
+                                }
                             }
                         }
                     }
@@ -372,33 +382,22 @@ fn parse_transfer(tx: &serde_json::Value, block_height: u32) -> Option<PendingTr
         }
     }
 
-    let text = transfer_text?;
+    let amount = transfer_amount?;
 
-    // 2. 解析: NXS:TRANSFER:<amount>:to=<address>
-    let parts: Vec<&str> = text.splitn(4, ':').collect();
-    if parts.len() < 4 { return None; }
-    // parts[0] = "NXS", parts[1] = "TRANSFER", parts[2] = amount, parts[3] = "to=<addr>"
-
-    let amount: u64 = parts[2].parse().ok()?;
-    if amount == 0 { return None; }
-
-    let to_part = parts[3];
-    if !to_part.starts_with("to=") { return None; }
-    let recipient = to_part[3..].to_string();
+    // 2. 获取 recipient — 从 output[1] 的地址读取（买家 NXS 标记 output）
+    let recipient = vouts.get(1)?["scriptPubKey"]["address"].as_str()?.to_string();
     if !recipient.starts_with("bc1p") && !recipient.starts_with("bc1q") {
         return None;
     }
 
-    // 3. 提取 sender 地址 — 从 vin[0] 的 prevout 获取
+    // 3. 获取 sender — 从 vin[0] 的 prevout 获取
     let vin0 = tx["vin"].as_array()?.first()?;
-
-    // Bitcoin Core verbosity=2 时，vin 包含 prevout
     let sender = vin0["prevout"]["scriptPubKey"]["address"].as_str()
         .map(|s| s.to_string())
         .unwrap_or_default();
 
     if sender.is_empty() { return None; }
-    if sender == recipient { return None; } // 不能自转
+    if sender == recipient { return None; }
 
     Some(PendingTransfer {
         txid,
