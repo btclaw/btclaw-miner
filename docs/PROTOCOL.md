@@ -1,4 +1,4 @@
-# NEXUS Protocol Specification v2.9.2
+# NEXUS Protocol Specification v3.0
 
 ### The first dual-layer interlocking token on Bitcoin L1.
 
@@ -571,6 +571,7 @@ A minter must fund their Taproot address with at least **10,000 sats**:
 | Batch proof collision           | Each batch mint uses a different block height → unique proof hash (§4.5).        |
 | Transfer double-spend           | 3-block confirmation rule. Pending transfers lock sender's balance on broadcast. |
 | Transfer insufficient balance   | Indexer checks available_balance = total - locked before accepting transfer.     |
+| Batch transfer parsing attack   | Amount count must equal seller input count; any mismatch invalidates the entire batch. |
 
 ---
 
@@ -685,9 +686,9 @@ Therefore, Transfer uses **only the OP_RETURN layer** — lightweight, cheap, an
 │  └─────────────────────────────────────────┘        │
 │                                                     │
 │  OUTPUT[0]: seller_receives + UTXO → seller         │
-│  OUTPUT[1]: 330 sats  → recipient (NXS marker)      │                                                
+│  OUTPUT[1]: 330 sats  → recipient (NXS marker)      │
 │  OUTPUT[2]: OP_RETURN (transfer data)               │
-│  OUTPUT[3]: change    → buyer (remaining BTC)      │
+│  OUTPUT[3]: change    → buyer (remaining BTC)       │
 └─────────────────────────────────────────────────────┘
 ```
 
@@ -721,16 +722,84 @@ NXS:TRANSFER:500
 
 The Indexer reads the recipient address from OUTPUT[1].
 
-### 16.5 Indexer Validation Rules (Transfer)
+### 16.5 Batch Transfer (Multi-Order Purchase)
+
+When a buyer purchases multiple sell orders in a single transaction, the market constructs a Batch Transfer that atomically moves NXS from multiple sellers to one buyer.
+
+#### OP_RETURN Format
+
+```
+NXS:BATCH:<amount_1>,<amount_2>[,<amount_3>,...]
+```
+
+Example (buying two orders: 500 NXS + 88 NXS):
+```
+NXS:BATCH:500,88
+```
+
+The number of comma-separated amounts (N) must equal the number of seller inputs. The OP_RETURN payload must not exceed 80 bytes (Bitcoin's relay limit).
+
+#### Transaction Structure
+
+```
+┌─────────────────────────────────────────────────────────┐
+│          NEXUS Batch Transfer Transaction               │
+│                                                         │
+│  INPUT[0]:     Seller_A UTXO (SIGHASH_SINGLE|ANYCANPAY) │
+│  INPUT[1]:     Seller_B UTXO (SIGHASH_SINGLE|ANYCANPAY) │
+│  ...                                                    │
+│  INPUT[N-1]:   Seller_N UTXO                            │
+│  INPUT[N..]:   Buyer UTXO(s)                            │
+│                                                         │
+│  OUTPUT[0]:    Seller_A receives (payment + UTXO)       │
+│  OUTPUT[1]:    Seller_B receives (payment + UTXO)       │
+│  ...                                                    │
+│  OUTPUT[N-1]:  Seller_N receives                        │
+│  OUTPUT[N]:    330 sats → Buyer (NXS marker)            │
+│  OUTPUT[N+1]:  Fee to protocol address (if ≥ 330 sats)  │
+│  OUTPUT[N+2]:  OP_RETURN  NXS:BATCH:<amounts>           │
+│  OUTPUT[N+3]:  Change → Buyer (if ≥ 330 sats)           │
+└─────────────────────────────────────────────────────────┘
+```
+
+**Key rule**: The recipient (buyer) address is always read from OUTPUT[N], where N equals the number of amounts in the BATCH payload.
+
+#### Indexer Validation
+
+For each `i` in `0..N`:
+
+1. `sender_i` = `vin[i].prevout.address`
+2. `amount_i` = `amounts[i]` from the OP_RETURN
+3. `recipient` = `OUTPUT[N].address`
+4. Verify `sender_i` balance ≥ `amount_i`
+5. Execute: `sender_i.balance -= amount_i`, `recipient.balance += amount_i`
+
+Each (sender → recipient, amount) pair is recorded as an independent TransferRecord with a `batch_index` field (0, 1, 2, ...).
+
+#### On-Chain Reference
+
+| Transaction | TXID |
+| ----------- | ---- |
+| First Batch Transfer | `b698ed234d6f25ed254d3f25ccf828ff9d03751cd59fd005b1c5ab645a3ab788` |
+| Block | 942321 |
+| Payload | `NXS:BATCH:500,88` |
+| Sellers | 2 (bc1plwqj... → 500 NXS, bc1pclp0... → 88 NXS) |
+| Buyer | bc1ps47y... (received 588 NXS total) |
+
+#### Backward Compatibility
+
+Single transfers continue to use `NXS:TRANSFER:<amount>` with the recipient at OUTPUT[1]. The Indexer supports both formats. Older Indexer versions that do not recognize `NXS:BATCH:` will safely ignore these transactions (the `NXS:TRANSFER:` prefix check does not match).
+
+### 16.6 Indexer Validation Rules (Transfer)
 
 | #  | Rule            | Description                                                                         |
 | -- | --------------- | ----------------------------------------------------------------------------------- |
-| 1  | **Format**      | OP_RETURN starts with `NXS:TRANSFER:`, valid amount. Recipient read from OUTPUT[1]. |
+| 1  | **Format**      | OP_RETURN starts with `NXS:TRANSFER:` (single) or `NXS:BATCH:` (multi). Recipient read from OUTPUT[1] (single) or OUTPUT[N] (batch, where N = amount count). |
 | 2  | **Balance**     | Sender has sufficient available NXS balance (amount ≤ available balance).           |
 | 3  | **Signature**   | Transaction signed by sender's Taproot key (proves address ownership).              |
 | 4  | **Confirmation**| 3 block confirmations required before balances update.                              |
 
-### 16.6 Three-Block Confirmation Rule
+### 16.7 Three-Block Confirmation Rule
 
 Transfer balance updates require 3 block confirmations to prevent issues from blockchain reorganizations:
 
@@ -743,7 +812,7 @@ TX Broadcast     → Sender's NXS locked (unavailable for other transfers)
 
 The lock-on-broadcast mechanism prevents double-spending: once a transfer TX enters the mempool, the transferred amount is immediately deducted from the sender's available balance, even before block inclusion.
 
-### 16.7 Available Balance Calculation
+### 16.8 Available Balance Calculation
 
 ```
 available_balance = total_balance - locked_in_pending_transfers - locked_in_open_orders
@@ -799,6 +868,9 @@ To protect against blockchain reorganizations. In a reorg, a confirmed transfer 
 
 **Q: Can I transfer NXS from any wallet?**
 Yes. Transfer only requires creating a standard Bitcoin transaction with an OP_RETURN output. Any Taproot-compatible wallet (UniSat, OKX Wallet, Xverse) can construct this transaction through the NEXUS web frontend.
+
+**Q: What is a Batch Transfer?**
+When a buyer purchases multiple sell orders at once, the market combines them into a single Bitcoin transaction using `NXS:BATCH:<amt1>,<amt2>,...` in the OP_RETURN. Each amount maps to the corresponding seller input. The buyer address is read from OUTPUT[N] where N is the number of amounts. This is more gas-efficient than executing multiple separate transfers.
 
 ---
 
