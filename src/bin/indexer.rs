@@ -1,4 +1,10 @@
-/// NEXUS Indexer Server v3.0 — 扫链 + REST API + Transfer 支持
+/// NEXUS Indexer Server v3.1 — 扫链 + REST API + Transfer + Batch Transfer 支持
+///
+/// v3.1 Changes:
+///   - NXS:BATCH:<amt1>,<amt2>,... 批量 Transfer 解析
+///   - parse_batch_transfer: 每个 vin[i] → amounts[i], recipient 从 OUTPUT[N]
+///   - TransferRecord 新增 batch_index 字段
+///   - 去重逻辑按 (txid, batch_index) 组合判断
 ///
 /// v3.0 Changes:
 ///   - NXS:TRANSFER OP_RETURN 扫描 + 余额更新
@@ -39,6 +45,8 @@ struct TransferRecord {
     to: String,
     amount: u64,
     block_height: u32,
+    #[serde(default)]
+    batch_index: u32,  // 0=单笔 transfer, 0..N-1=批量中的序号
 }
 
 const TRANSFERS_FILE: &str = "nexus_transfers.json";
@@ -72,7 +80,7 @@ impl ResponseCache {
             status: "{}".to_string(),
             holders: r#"{"holders":[],"total_holders":0}"#.to_string(),
             mints_recent: r#"{"mints":[],"total":0}"#.to_string(),
-            health: r#"{"status":"starting","protocol":"NEXUS","version":"3.0"}"#.to_string(),
+            health: r#"{"status":"starting","protocol":"NEXUS","version":"3.1"}"#.to_string(),
         }
     }
 }
@@ -138,7 +146,7 @@ fn refresh_cache(state: &AppState) {
 
     // health
     let health_json = serde_json::to_string(&serde_json::json!({
-        "status": "ok", "protocol": "NEXUS", "version": "3.0",
+        "status": "ok", "protocol": "NEXUS", "version": "3.1",
         "scan_height": scan_h, "total_transfers": transfers.len(),
     })).unwrap_or_default();
 
@@ -327,16 +335,17 @@ fn parse_candidate(tx: &serde_json::Value, block_height: u32, tx_index: u32) -> 
 }
 
 // ═══════════════════════════════════════════
-//  交易解析 — TRANSFER (新增)
+//  交易解析 — TRANSFER (单笔)
 // ═══════════════════════════════════════════
 
-/// 解析 NXS:TRANSFER:<amount>:to=<address> 格式的 OP_RETURN
+/// 解析 NXS:TRANSFER:<amount> 格式的 OP_RETURN
 struct PendingTransfer {
     txid: String,
     sender: String,
     recipient: String,
     amount: u64,
     block_height: u32,
+    batch_index: u32,
 }
 
 fn parse_transfer(tx: &serde_json::Value, block_height: u32) -> Option<PendingTransfer> {
@@ -362,6 +371,7 @@ fn parse_transfer(tx: &serde_json::Value, block_height: u32) -> Option<PendingTr
                     };
                     if data_start < script_bytes.len() {
                         if let Ok(text) = std::str::from_utf8(&script_bytes[data_start..]) {
+                            // 只匹配 NXS:TRANSFER:, 不匹配 NXS:BATCH:
                             if text.starts_with("NXS:TRANSFER:") {
                                 // 支持两种格式:
                                 // 新: NXS:TRANSFER:500
@@ -405,11 +415,114 @@ fn parse_transfer(tx: &serde_json::Value, block_height: u32) -> Option<PendingTr
         recipient,
         amount,
         block_height,
+        batch_index: 0, // 单笔 transfer
     })
 }
 
 // ═══════════════════════════════════════════
-//  区块扫描 — 同时处理 MINT + TRANSFER
+//  交易解析 — BATCH TRANSFER (新增 v3.1)
+// ═══════════════════════════════════════════
+
+/// 解析 NXS:BATCH:<amt1>,<amt2>,... 格式的 OP_RETURN
+/// 每个金额对应 vin[i] 的卖家, recipient 从 OUTPUT[N] 读取（N = 金额数量）
+fn parse_batch_transfer(tx: &serde_json::Value, block_height: u32) -> Vec<PendingTransfer> {
+    let txid = match tx["txid"].as_str() {
+        Some(s) => s.to_string(),
+        None => return vec![],
+    };
+    let vouts = match tx["vout"].as_array() {
+        Some(v) => v,
+        None => return vec![],
+    };
+    let vins = match tx["vin"].as_array() {
+        Some(v) => v,
+        None => return vec![],
+    };
+
+    // 1. 找 NXS:BATCH OP_RETURN 并解析金额列表
+    let mut amounts: Vec<u64> = Vec::new();
+
+    for vout in vouts.iter() {
+        let script_type = vout["scriptPubKey"]["type"].as_str().unwrap_or("");
+        let hex_str = vout["scriptPubKey"]["hex"].as_str().unwrap_or("");
+
+        if script_type == "nulldata" {
+            if let Ok(script_bytes) = hex::decode(hex_str) {
+                if script_bytes.len() > 4 && script_bytes[0] == 0x6a {
+                    let data_start = if script_bytes[1] <= 75 {
+                        2
+                    } else if script_bytes[1] == 0x4c && script_bytes.len() > 3 {
+                        3
+                    } else {
+                        continue;
+                    };
+                    if data_start < script_bytes.len() {
+                        if let Ok(text) = std::str::from_utf8(&script_bytes[data_start..]) {
+                            if text.starts_with("NXS:BATCH:") {
+                                let amounts_str = &text[10..]; // skip "NXS:BATCH:"
+                                for part in amounts_str.split(',') {
+                                    if let Ok(amt) = part.trim().parse::<u64>() {
+                                        if amt > 0 {
+                                            amounts.push(amt);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    if amounts.is_empty() {
+        return vec![];
+    }
+
+    let n = amounts.len();
+
+    // 2. recipient = OUTPUT[N]（N 个卖家 output 之后的第一个 = 买家 marker）
+    let recipient = match vouts.get(n) {
+        Some(vout) => match vout["scriptPubKey"]["address"].as_str() {
+            Some(addr) if addr.starts_with("bc1p") || addr.starts_with("bc1q") => addr.to_string(),
+            _ => return vec![],
+        },
+        None => return vec![],
+    };
+
+    // 3. 每个 vin[i] 的 prevout = sender_i
+    let mut results = Vec::new();
+    for i in 0..n {
+        let sender = match vins.get(i) {
+            Some(vin) => match vin["prevout"]["scriptPubKey"]["address"].as_str() {
+                Some(addr) if !addr.is_empty() && addr != recipient => addr.to_string(),
+                _ => {
+                    eprintln!("[scan] ❌ BATCH parse failed: vin[{}] has no valid sender address, tx {}",
+                        i, &txid[..12]);
+                    return vec![]; // 任何一个 sender 无效则整个 batch 无效
+                }
+            },
+            None => {
+                eprintln!("[scan] ❌ BATCH parse failed: vin[{}] missing, tx {}", i, &txid[..12]);
+                return vec![];
+            }
+        };
+
+        results.push(PendingTransfer {
+            txid: txid.clone(),
+            sender,
+            recipient: recipient.clone(),
+            amount: amounts[i],
+            block_height,
+            batch_index: i as u32,
+        });
+    }
+
+    results
+}
+
+// ═══════════════════════════════════════════
+//  区块扫描 — 同时处理 MINT + TRANSFER + BATCH
 // ═══════════════════════════════════════════
 
 fn scan_blocks(state: &AppState) {
@@ -479,11 +592,18 @@ fn scan_blocks(state: &AppState) {
             }
         }
 
-        // ── 处理 TRANSFER 候选 ──
-        let mut transfer_candidates = Vec::new();
+        // ── 处理 TRANSFER + BATCH 候选 ──
+        let mut transfer_candidates: Vec<PendingTransfer> = Vec::new();
         for tx in txs.iter() {
+            // 先尝试单笔 TRANSFER 解析
             if let Some(pending) = parse_transfer(tx, height) {
                 transfer_candidates.push(pending);
+            } else {
+                // 不是单笔 TRANSFER，尝试 BATCH 解析
+                let batch = parse_batch_transfer(tx, height);
+                if !batch.is_empty() {
+                    transfer_candidates.extend(batch);
+                }
             }
         }
 
@@ -492,8 +612,8 @@ fn scan_blocks(state: &AppState) {
             let mut transfers = state.transfers.lock().unwrap();
 
             for pending in transfer_candidates {
-                // 检查是否已经处理过（防止重复扫描）
-                if transfers.iter().any(|t| t.txid == pending.txid) {
+                // 去重：按 (txid, batch_index) 组合判断（防止重复扫描）
+                if transfers.iter().any(|t| t.txid == pending.txid && t.batch_index == pending.batch_index) {
                     continue;
                 }
 
@@ -520,11 +640,12 @@ fn scan_blocks(state: &AppState) {
                     to: pending.recipient.clone(),
                     amount: pending.amount,
                     block_height: pending.block_height,
+                    batch_index: pending.batch_index,
                 };
 
-                println!("[scan] ✅ TRANSFER {} NXS: {} → {} at block {} tx {}",
+                println!("[scan] ✅ TRANSFER {} NXS: {} → {} at block {} tx {} [batch#{}]",
                     pending.amount, &pending.sender[..16], &pending.recipient[..16],
-                    height, &pending.txid[..12]);
+                    height, &pending.txid[..12], pending.batch_index);
 
                 transfers.push(record);
                 found_transfers += 1;
@@ -734,7 +855,7 @@ async fn api_mint_by_tx(data: web::Data<Arc<AppState>>, path: web::Path<String>)
     }
 }
 
-/// GET /api/transfers/address/{addr} — 查某地址的转账记录（新增）
+/// GET /api/transfers/address/{addr} — 查某地址的转账记录
 async fn api_transfers_by_address(data: web::Data<Arc<AppState>>, path: web::Path<String>) -> HttpResponse {
     let addr = path.into_inner();
     let transfers = data.transfers.lock().unwrap();
@@ -747,6 +868,7 @@ async fn api_transfers_by_address(data: web::Data<Arc<AppState>>, path: web::Pat
             "to": t.to,
             "amount": t.amount,
             "block_height": t.block_height,
+            "batch_index": t.batch_index,
             "type": if t.from == addr { "sent" } else { "received" },
         }))
         .collect();
@@ -769,8 +891,9 @@ async fn api_transfers_by_address(data: web::Data<Arc<AppState>>, path: web::Pat
 async fn main() -> std::io::Result<()> {
     println!();
     println!("  ╔════════════════════════════════════════╗");
-    println!("  ║  NEXUS Indexer v3.0                    ║");
+    println!("  ║  NEXUS Indexer v3.1                    ║");
     println!("  ║  + Transfer Support (NXS:TRANSFER)     ║");
+    println!("  ║  + Batch Transfer (NXS:BATCH)          ║");
     println!("  ║  + Response Cache + CF Edge            ║");
     println!("  ╚════════════════════════════════════════╝");
     println!();
@@ -831,7 +954,7 @@ async fn main() -> std::io::Result<()> {
             .route("/api/tx/{txid}",      web::get().to(api_tx))
             .route("/api/mints/address/{addr}", web::get().to(api_mints_by_address))
             .route("/api/mint/tx/{txid}",       web::get().to(api_mint_by_tx))
-            // ── Transfer 端点（新增） ──
+            // ── Transfer 端点 ──
             .route("/api/transfers/address/{addr}", web::get().to(api_transfers_by_address))
             // ── 兼容旧路由 ──
             .route("/status",   web::get().to(api_status))
