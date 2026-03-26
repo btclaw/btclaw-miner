@@ -677,23 +677,24 @@ Therefore, Transfer uses **only the OP_RETURN layer** — lightweight, cheap, an
 │            NEXUS Transfer Transaction               │
 │                                                     │
 │  INPUT[0]: Sender's UTXO (Taproot signature)        │
-│            → Signature = proof of ownership          │
+│            → Signature = proof of ownership         │
 │                                                     │
 │  OP_RETURN LAYER (ASCII readable)                   │
 │  ┌─────────────────────────────────────────┐        │
-│  │ NXS:TRANSFER:<amount>:to=<recipient>    │        │
+│  │ NXS:TRANSFER:<amount>                   │        │
 │  └─────────────────────────────────────────┘        │
 │                                                     │
-│  OUTPUT[0]: 330 sats  → recipient (new holder)      │
-│  OUTPUT[1]: OP_RETURN (transfer data)               │
-│  OUTPUT[2]: change    → sender (remaining BTC)      │
+│  OUTPUT[0]: seller_receives + UTXO → seller         │
+│  OUTPUT[1]: 330 sats  → recipient (NXS marker)      │                                                
+│  OUTPUT[2]: OP_RETURN (transfer data)               │
+│  OUTPUT[3]: change    → buyer (remaining BTC)      │
 └─────────────────────────────────────────────────────┘
 ```
 
 ### 16.3 OP_RETURN Format
 
 ```
-NXS:TRANSFER:<amount>:to=<recipient_address>
+NXS:TRANSFER:<amount>
 ```
 
 | Segment         | Description                                          |
@@ -701,29 +702,33 @@ NXS:TRANSFER:<amount>:to=<recipient_address>
 | `NXS`           | Protocol magic prefix.                               |
 | `TRANSFER`      | Operation type.                                      |
 | `<amount>`      | Number of NXS tokens to transfer (integer).          |
-| `to=<address>`  | Recipient's Bitcoin address (Taproot `bc1p...`).     |
+
+The recipient address is not in the OP_RETURN — it is read from OUTPUT[1] (the NXS marker output). This keeps the OP_RETURN payload under Bitcoin's 80-byte relay limit.
 
 Example:
 ```
-NXS:TRANSFER:1000:to=bc1prh30dts9mn738hxz59v58z4cxutphrxfntfl8rxlh8fr2mhtc67sjy3t6z
+NXS:TRANSFER:500
 ```
 
 ### 16.4 Transaction Outputs
 
-| Output   | Value    | Purpose                            |
-| -------- | -------- | ---------------------------------- |
-| `[0]`    | 330 sats | Recipient's token-holding UTXO     |
-| `[1]`    | 0 sats   | OP_RETURN data carrier             |
-| `[2]`    | Variable | Change returned to sender          |
+| Output   | Value    | Purpose                                    |
+| -------- | -------- | ------------------------------------------ |
+| `[0]`    | Variable | Seller receives (payment + UTXO returned)  |
+| `[1]`    | 330 sats | Recipient's NXS marker UTXO                |
+| `[2]`    | 0 sats   | OP_RETURN data carrier                     |
+| `[3]`    | Variable | Change returned to buyer                   |
+
+The Indexer reads the recipient address from OUTPUT[1].
 
 ### 16.5 Indexer Validation Rules (Transfer)
 
-| #  | Rule            | Description                                                                 |
-| -- | --------------- | --------------------------------------------------------------------------- |
-| 1  | **Format**      | OP_RETURN starts with `NXS:TRANSFER`, valid amount, valid `to=` address.    |
-| 2  | **Balance**     | Sender has sufficient available NXS balance (amount ≤ available balance).   |
-| 3  | **Signature**   | Transaction signed by sender's Taproot key (proves address ownership).      |
-| 4  | **Confirmation**| 3 block confirmations required before balances update.                      |
+| #  | Rule            | Description                                                                         |
+| -- | --------------- | ----------------------------------------------------------------------------------- |
+| 1  | **Format**      | OP_RETURN starts with `NXS:TRANSFER:`, valid amount. Recipient read from OUTPUT[1]. |
+| 2  | **Balance**     | Sender has sufficient available NXS balance (amount ≤ available balance).           |
+| 3  | **Signature**   | Transaction signed by sender's Taproot key (proves address ownership).              |
+| 4  | **Confirmation**| 3 block confirmations required before balances update.                              |
 
 ### 16.6 Three-Block Confirmation Rule
 
