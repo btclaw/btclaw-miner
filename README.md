@@ -109,7 +109,13 @@ The 3-block confirmation rule prevents double-spending: transferred NXS is locke
 
 ### Batch Transfer
 
-When purchasing multiple sell orders at once, the market uses `NXS:BATCH:<amt1>,<amt2>,...` in the OP_RETURN. Each amount maps to the corresponding seller input. The buyer address is read from OUTPUT[N] where N is the number of amounts. See [`docs/PROTOCOL.md`](docs/PROTOCOL.md) §16.5 for full specification.
+When purchasing multiple sell orders at once, the market combines them into a single transaction:
+```
+NXS:BATCH:<amount_1>,<amount_2>[,<amount_3>,...]
+```
+
+Example: `NXS:BATCH:500,88` — buyer purchases 500 NXS from Seller A and 88 NXS from Seller B in one atomic transaction. Each amount maps to the corresponding seller input. The buyer address is read from OUTPUT[N] where N is the number of amounts. See [`docs/PROTOCOL.md` §16.5](docs/PROTOCOL.md) for full specification.
+```
 
 ---
 
@@ -291,8 +297,7 @@ Protects against blockchain reorganizations. Transferred NXS is locked on broadc
 Yes. Any Taproot-compatible wallet (UniSat, OKX, Xverse) can transfer through the web frontend.
 
 **Q: What is a Batch Transfer?**
-When buying multiple sell orders at once, they're combined into one transaction using `NXS:BATCH:`. More gas-efficient than separate transfers.
-
+Multiple sell orders combined into one transaction using `NXS:BATCH`. More gas-efficient than separate transfers.
 ---
 
 ## Links
