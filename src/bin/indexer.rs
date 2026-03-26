@@ -1,20 +1,21 @@
-/// NEXUS Indexer Server v2.9.2 — 扫链 + REST API + 响应缓存
+/// NEXUS Indexer Server v3.0 — 扫链 + REST API + Transfer 支持
 ///
-/// 优化：
-///   - 响应缓存层：HTTP 处理器不再锁 Indexer Mutex，直接读预序列化 JSON
-///   - RwLock 缓存：多个 HTTP 请求并发读取，零阻塞
-///   - Cache-Control：CF 边缘缓存 5 秒，减少回源
-///   - 扫描线程：每轮扫描后更新缓存，HTTP 永不等待扫描完成
+/// v3.0 Changes:
+///   - NXS:TRANSFER OP_RETURN 扫描 + 余额更新
+///   - TransferRecord 持久化
+///   - GET /api/transfers/address/{addr} 端点
+///   - balance = minted - sent + received
 ///
 /// API端点:
 ///   GET /api/status              — 铸造进度、供应量、持有者数
 ///   GET /api/balance/:addr       — 地址NXS余额
 ///   GET /api/mint/:seq           — 按序号查铸造记录
 ///   GET /api/mints?page=1&limit=20 — 分页铸造列表
-///   GET /api/mints/recent        — 最近铸造记录（前端用，最新20条）
-///   GET /api/mints/address/:addr — 按地址查铸造记录
-///   GET /api/holders             — 持有者排行（前100）
+///   GET /api/mints/recent        — 最近铸造记录
+///   GET /api/mints/address/:addr — 按地址查铸造+余额
+///   GET /api/holders             — 持有者排行
 ///   GET /api/tx/:txid            — 按txid查铸造记录
+///   GET /api/transfers/address/:addr — 按地址查转账记录
 ///   GET /api/health              — 健康检查
 
 use std::sync::{Arc, Mutex, RwLock};
@@ -28,10 +29,36 @@ use nexus_reactor::transaction::*;
 use nexus_reactor::node_detect;
 
 // ═══════════════════════════════════════════
-//  响应缓存 — HTTP处理器只读这里，不锁Indexer
+//  Transfer 记录
 // ═══════════════════════════════════════════
 
-/// 预序列化的 JSON 响应，由扫描线程定期更新
+#[derive(Serialize, Deserialize, Clone, Debug)]
+struct TransferRecord {
+    txid: String,
+    from: String,
+    to: String,
+    amount: u64,
+    block_height: u32,
+}
+
+const TRANSFERS_FILE: &str = "nexus_transfers.json";
+
+fn save_transfers(transfers: &[TransferRecord]) {
+    if let Ok(j) = serde_json::to_string_pretty(transfers) {
+        std::fs::write(TRANSFERS_FILE, j).ok();
+    }
+}
+
+fn load_transfers() -> Vec<TransferRecord> {
+    std::fs::read_to_string(TRANSFERS_FILE).ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_default()
+}
+
+// ═══════════════════════════════════════════
+//  响应缓存
+// ═══════════════════════════════════════════
+
 struct ResponseCache {
     status: String,
     holders: String,
@@ -45,7 +72,7 @@ impl ResponseCache {
             status: "{}".to_string(),
             holders: r#"{"holders":[],"total_holders":0}"#.to_string(),
             mints_recent: r#"{"mints":[],"total":0}"#.to_string(),
-            health: r#"{"status":"starting","protocol":"NEXUS","version":"2.9.2"}"#.to_string(),
+            health: r#"{"status":"starting","protocol":"NEXUS","version":"3.0"}"#.to_string(),
         }
     }
 }
@@ -57,30 +84,31 @@ impl ResponseCache {
 struct AppState {
     indexer: Mutex<Indexer>,
     scan_height: Mutex<u32>,
-    /// 预序列化响应缓存 — RwLock 允许多个 HTTP 并发读
     cache: RwLock<ResponseCache>,
+    transfers: Mutex<Vec<TransferRecord>>,
     rpc_url: String,
     rpc_user: String,
     rpc_pass: String,
 }
 
 // ═══════════════════════════════════════════
-//  缓存刷新 — 扫描线程调用
+//  缓存刷新
 // ═══════════════════════════════════════════
 
-/// 锁 indexer 一次，序列化所有高频响应，写入 RwLock 缓存
-/// HTTP 处理器直接读缓存，永远不等待扫描
 fn refresh_cache(state: &AppState) {
     let indexer = state.indexer.lock().unwrap();
     let scan_h = *state.scan_height.lock().unwrap();
+    let transfers = state.transfers.lock().unwrap();
 
     // status
     let mut status_val = serde_json::to_value(&indexer.status()).unwrap();
     status_val["scan_height"] = serde_json::json!(scan_h);
+    status_val["total_transfers"] = serde_json::json!(transfers.len());
     let status_json = serde_json::to_string(&status_val).unwrap_or_default();
 
-    // holders (top 100)
+    // holders (top 100) — balances already reflect transfers
     let mut holders_list: Vec<serde_json::Value> = indexer.balances.iter()
+        .filter(|(_, &bal)| bal > 0)
         .map(|(addr, &bal)| {
             let mint_count = indexer.mints.iter().filter(|m| m.address == *addr).count();
             serde_json::json!({"address": addr, "balance": bal, "mint_count": mint_count})
@@ -89,7 +117,7 @@ fn refresh_cache(state: &AppState) {
     holders_list.sort_by(|a, b| b["balance"].as_u64().cmp(&a["balance"].as_u64()));
     holders_list.truncate(100);
     let holders_json = serde_json::to_string(&serde_json::json!({
-        "total_holders": indexer.balances.len(),
+        "total_holders": holders_list.len(),
         "holders": holders_list,
     })).unwrap_or_default();
 
@@ -110,10 +138,10 @@ fn refresh_cache(state: &AppState) {
 
     // health
     let health_json = serde_json::to_string(&serde_json::json!({
-        "status": "ok", "protocol": "NEXUS", "version": "2.9.2", "scan_height": scan_h,
+        "status": "ok", "protocol": "NEXUS", "version": "3.0",
+        "scan_height": scan_h, "total_transfers": transfers.len(),
     })).unwrap_or_default();
 
-    // 写入缓存（write lock 很短，只是赋值字符串）
     let mut cache = state.cache.write().unwrap();
     cache.status = status_json;
     cache.holders = holders_json;
@@ -191,7 +219,7 @@ fn get_raw_tx(client: &reqwest::blocking::Client, url: &str, user: &str, pass: &
 }
 
 // ═══════════════════════════════════════════
-//  交易解析
+//  交易解析 — MINT
 // ═══════════════════════════════════════════
 
 fn parse_candidate(tx: &serde_json::Value, block_height: u32, tx_index: u32) -> Option<CandidateTx> {
@@ -219,7 +247,7 @@ fn parse_candidate(tx: &serde_json::Value, block_height: u32, tx_index: u32) -> 
                         };
                         let data = &script_bytes[data_start..];
                         if let Ok(text) = std::str::from_utf8(data) {
-                            if text.starts_with("NXS:") {
+                            if text.starts_with("NXS:MINT:") {
                                 opreturn_data = Some(data.to_vec());
                             }
                         }
@@ -299,7 +327,90 @@ fn parse_candidate(tx: &serde_json::Value, block_height: u32, tx_index: u32) -> 
 }
 
 // ═══════════════════════════════════════════
-//  区块扫描
+//  交易解析 — TRANSFER (新增)
+// ═══════════════════════════════════════════
+
+/// 解析 NXS:TRANSFER:<amount>:to=<address> 格式的 OP_RETURN
+struct PendingTransfer {
+    txid: String,
+    sender: String,
+    recipient: String,
+    amount: u64,
+    block_height: u32,
+}
+
+fn parse_transfer(tx: &serde_json::Value, block_height: u32) -> Option<PendingTransfer> {
+    let txid = tx["txid"].as_str()?.to_string();
+    let vouts = tx["vout"].as_array()?;
+
+    // 1. 找 NXS:TRANSFER OP_RETURN
+    let mut transfer_text: Option<String> = None;
+
+    for vout in vouts.iter() {
+        let script_type = vout["scriptPubKey"]["type"].as_str().unwrap_or("");
+        let hex_str = vout["scriptPubKey"]["hex"].as_str().unwrap_or("");
+
+        if script_type == "nulldata" {
+            if let Ok(script_bytes) = hex::decode(hex_str) {
+                if script_bytes.len() > 4 && script_bytes[0] == 0x6a {
+                    let data_start = if script_bytes[1] <= 75 {
+                        2
+                    } else if script_bytes[1] == 0x4c && script_bytes.len() > 3 {
+                        3
+                    } else {
+                        continue;
+                    };
+                    if data_start < script_bytes.len() {
+                        if let Ok(text) = std::str::from_utf8(&script_bytes[data_start..]) {
+                            if text.starts_with("NXS:TRANSFER:") {
+                                transfer_text = Some(text.to_string());
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    let text = transfer_text?;
+
+    // 2. 解析: NXS:TRANSFER:<amount>:to=<address>
+    let parts: Vec<&str> = text.splitn(4, ':').collect();
+    if parts.len() < 4 { return None; }
+    // parts[0] = "NXS", parts[1] = "TRANSFER", parts[2] = amount, parts[3] = "to=<addr>"
+
+    let amount: u64 = parts[2].parse().ok()?;
+    if amount == 0 { return None; }
+
+    let to_part = parts[3];
+    if !to_part.starts_with("to=") { return None; }
+    let recipient = to_part[3..].to_string();
+    if !recipient.starts_with("bc1p") && !recipient.starts_with("bc1q") {
+        return None;
+    }
+
+    // 3. 提取 sender 地址 — 从 vin[0] 的 prevout 获取
+    let vin0 = tx["vin"].as_array()?.first()?;
+
+    // Bitcoin Core verbosity=2 时，vin 包含 prevout
+    let sender = vin0["prevout"]["scriptPubKey"]["address"].as_str()
+        .map(|s| s.to_string())
+        .unwrap_or_default();
+
+    if sender.is_empty() { return None; }
+    if sender == recipient { return None; } // 不能自转
+
+    Some(PendingTransfer {
+        txid,
+        sender,
+        recipient,
+        amount,
+        block_height,
+    })
+}
+
+// ═══════════════════════════════════════════
+//  区块扫描 — 同时处理 MINT + TRANSFER
 // ═══════════════════════════════════════════
 
 fn scan_blocks(state: &AppState) {
@@ -321,12 +432,12 @@ fn scan_blocks(state: &AppState) {
     let end = chain_height.min(start + 100);
 
     if start > chain_height {
-        // 即使没有新区块，也刷新缓存（保持 scan_height 更新）
         refresh_cache(state);
         return;
     }
 
-    let mut found = 0u32;
+    let mut found_mints = 0u32;
+    let mut found_transfers = 0u32;
 
     for height in start..=end {
         let hash = match get_block_hash(&client, &state.rpc_url, &state.rpc_user, &state.rpc_pass, height) {
@@ -344,27 +455,80 @@ fn scan_blocks(state: &AppState) {
             None => continue,
         };
 
-        let mut candidates = Vec::new();
+        // ── 处理 MINT 候选 ──
+        let mut mint_candidates = Vec::new();
         for (tx_idx, tx) in txs.iter().enumerate() {
             if let Some(candidate) = parse_candidate(tx, height, tx_idx as u32) {
-                candidates.push(candidate);
+                mint_candidates.push(candidate);
             }
         }
 
-        if !candidates.is_empty() {
+        if !mint_candidates.is_empty() {
             let mut indexer = state.indexer.lock().unwrap();
-            for candidate in candidates {
+            for candidate in mint_candidates {
                 match light_validate(&indexer, &candidate) {
                     Ok(record) => {
                         println!("[scan] ✅ MINT #{} at block {} tx {}",
                             record.seq, height, &record.txid[..12]);
                         indexer.confirm(record);
-                        found += 1;
+                        found_mints += 1;
                     }
                     Err(e) => {
-                        eprintln!("[scan] ❌ Invalid NEXUS tx at block {}: {}", height, e);
+                        eprintln!("[scan] ❌ Invalid MINT at block {}: {}", height, e);
                     }
                 }
+            }
+        }
+
+        // ── 处理 TRANSFER 候选 ──
+        let mut transfer_candidates = Vec::new();
+        for tx in txs.iter() {
+            if let Some(pending) = parse_transfer(tx, height) {
+                transfer_candidates.push(pending);
+            }
+        }
+
+        if !transfer_candidates.is_empty() {
+            let mut indexer = state.indexer.lock().unwrap();
+            let mut transfers = state.transfers.lock().unwrap();
+
+            for pending in transfer_candidates {
+                // 检查是否已经处理过（防止重复扫描）
+                if transfers.iter().any(|t| t.txid == pending.txid) {
+                    continue;
+                }
+
+                // 验证 sender 余额
+                let sender_balance = indexer.balances.get(&pending.sender).copied().unwrap_or(0);
+                if sender_balance < pending.amount {
+                    eprintln!("[scan] ❌ TRANSFER failed at block {}: {} has {} NXS, needs {}",
+                        height, &pending.sender[..16], sender_balance, pending.amount);
+                    continue;
+                }
+
+                // 更新余额
+                *indexer.balances.entry(pending.sender.clone()).or_insert(0) -= pending.amount;
+                *indexer.balances.entry(pending.recipient.clone()).or_insert(0) += pending.amount;
+
+                // 清理零余额
+                if indexer.balances.get(&pending.sender) == Some(&0) {
+                    indexer.balances.remove(&pending.sender);
+                }
+
+                let record = TransferRecord {
+                    txid: pending.txid.clone(),
+                    from: pending.sender.clone(),
+                    to: pending.recipient.clone(),
+                    amount: pending.amount,
+                    block_height: pending.block_height,
+                };
+
+                println!("[scan] ✅ TRANSFER {} NXS: {} → {} at block {} tx {}",
+                    pending.amount, &pending.sender[..16], &pending.recipient[..16],
+                    height, &pending.txid[..12]);
+
+                transfers.push(record);
+                found_transfers += 1;
             }
         }
 
@@ -372,16 +536,21 @@ fn scan_blocks(state: &AppState) {
     }
 
     // 保存状态
-    let indexer = state.indexer.lock().unwrap();
-    let scan_h = *state.scan_height.lock().unwrap();
-    save_state(&indexer, scan_h);
-    drop(indexer); // 显式释放锁，再刷新缓存
+    {
+        let indexer = state.indexer.lock().unwrap();
+        let scan_h = *state.scan_height.lock().unwrap();
+        save_state(&indexer, scan_h);
+    }
+    {
+        let transfers = state.transfers.lock().unwrap();
+        save_transfers(&transfers);
+    }
 
-    // ★ 关键：扫描完成后刷新缓存，HTTP 处理器从缓存读取
     refresh_cache(state);
 
-    if found > 0 {
-        println!("[scan] Scanned {} → {}, found {} mints", start, end, found);
+    if found_mints > 0 || found_transfers > 0 {
+        println!("[scan] Scanned {} → {}, mints: {}, transfers: {}",
+            start, end, found_mints, found_transfers);
     }
 }
 
@@ -434,12 +603,9 @@ fn light_validate(indexer: &Indexer, tx: &CandidateTx) -> Result<MintRecord, Str
 const GENESIS_BLOCK: u32 = 941890;
 
 // ═══════════════════════════════════════════
-//  HTTP 响应辅助 — 带 Cache-Control
+//  HTTP 响应辅助
 // ═══════════════════════════════════════════
 
-/// 返回 JSON 字符串 + Cache-Control 头
-/// max-age=5: CF 边缘缓存 5 秒（减少回源 80%+）
-/// stale-while-revalidate=30: 缓存过期后 30 秒内先返回旧数据
 fn cached_json_response(body: &str) -> HttpResponse {
     HttpResponse::Ok()
         .insert_header(("Content-Type", "application/json"))
@@ -448,35 +614,31 @@ fn cached_json_response(body: &str) -> HttpResponse {
 }
 
 // ═══════════════════════════════════════════
-//  HTTP API — 高频端点从缓存读取（零锁等待）
+//  HTTP API — 高频端点
 // ═══════════════════════════════════════════
 
-/// GET /api/status — 从缓存读取，不锁 Indexer
 async fn api_status(data: web::Data<Arc<AppState>>) -> HttpResponse {
     let cache = data.cache.read().unwrap();
     cached_json_response(&cache.status)
 }
 
-/// GET /api/holders — 从缓存读取
 async fn api_holders(data: web::Data<Arc<AppState>>) -> HttpResponse {
     let cache = data.cache.read().unwrap();
     cached_json_response(&cache.holders)
 }
 
-/// GET /api/mints/recent — 从缓存读取
 async fn api_mints_recent(data: web::Data<Arc<AppState>>) -> HttpResponse {
     let cache = data.cache.read().unwrap();
     cached_json_response(&cache.mints_recent)
 }
 
-/// GET /api/health — 从缓存读取
 async fn api_health(data: web::Data<Arc<AppState>>) -> HttpResponse {
     let cache = data.cache.read().unwrap();
     cached_json_response(&cache.health)
 }
 
 // ═══════════════════════════════════════════
-//  HTTP API — 低频端点（仍需锁 Indexer，但请求量小）
+//  HTTP API — 低频端点
 // ═══════════════════════════════════════════
 
 async fn api_balance(data: web::Data<Arc<AppState>>, path: web::Path<String>) -> HttpResponse {
@@ -534,7 +696,7 @@ async fn api_tx(data: web::Data<Arc<AppState>>, path: web::Path<String>) -> Http
     }
 }
 
-/// GET /api/mints/address/{addr}
+/// GET /api/mints/address/{addr} — 包含 transfer 后的真实余额
 async fn api_mints_by_address(data: web::Data<Arc<AppState>>, path: web::Path<String>) -> HttpResponse {
     let addr = path.into_inner();
     let indexer = data.indexer.lock().unwrap();
@@ -548,6 +710,7 @@ async fn api_mints_by_address(data: web::Data<Arc<AppState>>, path: web::Path<St
         .collect();
     mints.reverse();
 
+    // balance 已经包含 transfer 的影响
     let balance = indexer.balances.get(&addr).copied().unwrap_or(0);
 
     cached_json_response(&serde_json::to_string(&serde_json::json!({
@@ -572,6 +735,33 @@ async fn api_mint_by_tx(data: web::Data<Arc<AppState>>, path: web::Path<String>)
     }
 }
 
+/// GET /api/transfers/address/{addr} — 查某地址的转账记录（新增）
+async fn api_transfers_by_address(data: web::Data<Arc<AppState>>, path: web::Path<String>) -> HttpResponse {
+    let addr = path.into_inner();
+    let transfers = data.transfers.lock().unwrap();
+
+    let records: Vec<serde_json::Value> = transfers.iter()
+        .filter(|t| t.from == addr || t.to == addr)
+        .map(|t| serde_json::json!({
+            "txid": t.txid,
+            "from": t.from,
+            "to": t.to,
+            "amount": t.amount,
+            "block_height": t.block_height,
+            "type": if t.from == addr { "sent" } else { "received" },
+        }))
+        .collect();
+
+    let mut records_rev = records;
+    records_rev.reverse();
+
+    cached_json_response(&serde_json::to_string(&serde_json::json!({
+        "address": addr,
+        "transfers": records_rev,
+        "total": records_rev.len(),
+    })).unwrap())
+}
+
 // ═══════════════════════════════════════════
 //  主函数
 // ═══════════════════════════════════════════
@@ -580,9 +770,9 @@ async fn api_mint_by_tx(data: web::Data<Arc<AppState>>, path: web::Path<String>)
 async fn main() -> std::io::Result<()> {
     println!();
     println!("  ╔════════════════════════════════════════╗");
-    println!("  ║  NEXUS Indexer v2.9.2                  ║");
-    println!("  ║  + Response Cache Layer                ║");
-    println!("  ║  + Cache-Control for CF Edge           ║");
+    println!("  ║  NEXUS Indexer v3.0                    ║");
+    println!("  ║  + Transfer Support (NXS:TRANSFER)     ║");
+    println!("  ║  + Response Cache + CF Edge            ║");
     println!("  ╚════════════════════════════════════════╝");
     println!();
 
@@ -592,22 +782,26 @@ async fn main() -> std::io::Result<()> {
     let rpc_pass = config.rpc_pass.clone();
 
     let (indexer, scan_height) = load_state();
-    println!("  Loaded state: {} mints, scan height: {}", indexer.mints.len(), scan_height);
+    let transfers = load_transfers();
+    println!("  Loaded state: {} mints, {} transfers, scan height: {}",
+        indexer.mints.len(), transfers.len(), scan_height);
+
+    // 重建余额：先从 indexer 自带的 balances，然后应用 transfers
+    // (如果 indexer 的 balances 已经包含 transfer 影响则跳过)
 
     let state = Arc::new(AppState {
         indexer: Mutex::new(indexer),
         scan_height: Mutex::new(scan_height),
         cache: RwLock::new(ResponseCache::empty()),
+        transfers: Mutex::new(transfers),
         rpc_url: rpc_url.clone(),
         rpc_user: rpc_user.clone(),
         rpc_pass: rpc_pass.clone(),
     });
 
-    // 启动时立即填充缓存
     refresh_cache(&state);
     println!("  [cache] Initial cache populated");
 
-    // 后台扫描线程
     let scan_state = state.clone();
     std::thread::spawn(move || {
         println!("  [scanner] Starting from block {}...", GENESIS_BLOCK);
@@ -619,7 +813,6 @@ async fn main() -> std::io::Result<()> {
 
     let http_state = state.clone();
     println!("  [http] Listening on http://0.0.0.0:3000");
-    println!("  [http] Cache-Control: max-age=5, stale-while-revalidate=30");
     println!();
 
     HttpServer::new(move || {
@@ -627,18 +820,20 @@ async fn main() -> std::io::Result<()> {
         App::new()
             .wrap(cors)
             .wrap(middleware::Logger::new("%a %r %s %Dms"))
-            // ── 高频端点（从缓存读取，零锁） ──
+            // ── 高频端点（缓存） ──
             .route("/api/status",   web::get().to(api_status))
             .route("/api/holders",  web::get().to(api_holders))
             .route("/api/mints/recent", web::get().to(api_mints_recent))
             .route("/api/health",   web::get().to(api_health))
-            // ── 低频端点（仍需锁，但请求少） ──
+            // ── 低频端点 ──
             .route("/api/balance/{addr}", web::get().to(api_balance))
             .route("/api/mint/{seq}",     web::get().to(api_mint_by_seq))
             .route("/api/mints",          web::get().to(api_mints))
             .route("/api/tx/{txid}",      web::get().to(api_tx))
             .route("/api/mints/address/{addr}", web::get().to(api_mints_by_address))
             .route("/api/mint/tx/{txid}",       web::get().to(api_mint_by_tx))
+            // ── Transfer 端点（新增） ──
+            .route("/api/transfers/address/{addr}", web::get().to(api_transfers_by_address))
             // ── 兼容旧路由 ──
             .route("/status",   web::get().to(api_status))
             .route("/holders",  web::get().to(api_holders))
@@ -650,7 +845,7 @@ async fn main() -> std::io::Result<()> {
             .app_data(web::Data::new(http_state.clone()))
     })
     .bind("0.0.0.0:3000")?
-    .workers(4)  // ★ 4个工作线程，扛更多并发
+    .workers(4)
     .run()
     .await
 }
