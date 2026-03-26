@@ -94,13 +94,13 @@ NXS:MINT:500:w=b8a4cee75bc2a205:p=a14075ce74aabea5
 Transfer uses **only the OP\_RETURN layer** — no Witness inscription, no full node required. The Taproot signature proves ownership.
 
 ```
-NXS:TRANSFER:<amount>:to=<recipient_address>
+NXS:TRANSFER:<amount>
 ```
 
-Example: `NXS:TRANSFER:1000:to=bc1prh30dts9mn738...jy3t6z`
+Example: NXS:TRANSFER:500
 
 Transfer validation rules:
-1. **Format** — OP\_RETURN starts with `NXS:TRANSFER`, valid amount, valid `to=` address
+1. **Format** — OP\_RETURN starts with `NXS:TRANSFER:`, valid amount. Recipient read from OUTPUT[1]
 2. **Balance** — Sender has sufficient available NXS balance
 3. **Signature** — Transaction signed by sender's Taproot key
 4. **Confirmation** — 3 block confirmations required before balances update
