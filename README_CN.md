@@ -94,10 +94,12 @@ NXS:MINT:500:w=b8a4cee75bc2a205:p=a14075ce74aabea5
 转移仅使用 **OP\_RETURN 层** — 无需 Witness 铭文，无需全节点。Taproot 签名证明所有权。
 
 ```
-NXS:TRANSFER:<数量>:to=<接收者地址>
+NXS:TRANSFER:<数量>
 ```
 
-示例：`NXS:TRANSFER:1000:to=bc1prh30dts9mn738...jy3t6z`
+示例：NXS:TRANSFER:500
+
+接收者地址从 OUTPUT[1]（NXS 标记输出）读取，不在 OP_RETURN 中。这使数据载荷保持在比特币 80 字节中继限制以下。
 
 转移验证规则：
 1. **格式** — OP\_RETURN 以 `NXS:TRANSFER` 开头，有效金额，有效 `to=` 地址
