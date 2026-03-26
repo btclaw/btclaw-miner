@@ -928,7 +928,14 @@ async fn main() -> std::io::Result<()> {
     std::thread::spawn(move || {
         println!("  [scanner] Starting from block {}...", GENESIS_BLOCK);
         loop {
+            let before = *scan_state.scan_height.lock().unwrap();
             scan_blocks(&scan_state);
+            let after = *scan_state.scan_height.lock().unwrap();
+
+            if after - before >= 100 {
+                println!("[scan] Catching up... height: {}", after);
+                continue;
+            }
             std::thread::sleep(std::time::Duration::from_secs(30));
         }
     });
