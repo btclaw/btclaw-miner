@@ -107,6 +107,10 @@ Transfer validation rules:
 
 The 3-block confirmation rule prevents double-spending: transferred NXS is locked on broadcast, and balances only update after 3 confirmations.
 
+### Batch Transfer
+
+When purchasing multiple sell orders at once, the market uses `NXS:BATCH:<amt1>,<amt2>,...` in the OP_RETURN. Each amount maps to the corresponding seller input. The buyer address is read from OUTPUT[N] where N is the number of amounts. See [`docs/PROTOCOL.md`](docs/PROTOCOL.md) §16.5 for full specification.
+
 ---
 
 ## Full Node Proof
@@ -262,6 +266,7 @@ Live at **[bitcoinexus.xyz](https://bitcoinexus.xyz)** — minting progress, hol
 | Batch proof collision | Each batch mint uses a different block height → unique proof |
 | Transfer double-spend | 3-block confirmation rule; pending transfers lock sender's balance |
 | Transfer insufficient balance | Indexer checks available\_balance = total - locked before accepting |
+| Batch transfer parsing attack | Amount count must equal seller input count; mismatch invalidates entire batch |
 
 ---
 
@@ -284,6 +289,9 @@ Protects against blockchain reorganizations. Transferred NXS is locked on broadc
 
 **Q: Can I transfer NXS from any wallet?**
 Yes. Any Taproot-compatible wallet (UniSat, OKX, Xverse) can transfer through the web frontend.
+
+**Q: What is a Batch Transfer?**
+When buying multiple sell orders at once, they're combined into one transaction using `NXS:BATCH:`. More gas-efficient than separate transfers.
 
 ---
 
