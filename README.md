@@ -145,7 +145,7 @@ The Reactor generates a **two-round cryptographic challenge**:
 
 3. **Combined**: SHA256(round1\_hash + round2\_hash) → stored in `fnp` field
 
-The **complete proof data** (both round hashes, timestamps, all 20 block heights, block hash, pubkey) is embedded in the on-chain Witness JSON. The Indexer independently recomputes both rounds using its own Bitcoin Core RPC and rejects any proof where the recomputed hashes don't match. Forgery of a valid proof without access to authentic raw block data is computationally infeasible.
+The **complete proof data** (both round hashes, timestamps, all 20 block heights, block hash, pubkey) is embedded in the on-chain Witness JSON. The Indexer independently recomputes both rounds using its own Bitcoin Core RPC and rejects any proof where the recomputed hashes don't match. No fabricated proof can pass this verification.
 
 The Reactor also verifies your `blocks/` directory:
 - Total `blk*.dat` size > 500 GB
@@ -274,7 +274,7 @@ Live at **[bitcoinexus.xyz](https://bitcoinexus.xyz)** — minting progress, hol
 | Attack Vector | Defense |
 |--------------|---------|
 | Fake proof (random fnp) | Indexer independently recomputes both rounds via its own RPC. Fake hashes rejected. |
-| API relay (no full node) | Proof requires raw block data for 20 random blocks. Local ~1s vs remote ~5-15s. |
+| No block data access | Proof requires raw bytes from 20 random blocks. Without authentic block data, proof verification fails. |
 | Pruned node disguise | Direct disk read: blk files > 500GB + early files exist |
 | Identity spoofing | `pk` field bound to Taproot signing key + Indexer cross-check |
 | Proof replay | Used-proof deduplication in Indexer |
