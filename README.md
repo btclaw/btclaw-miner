@@ -4,7 +4,7 @@
 
 ### The first dual-layer interlocking token on Bitcoin L1.
 
-Every mint transaction simultaneously writes to **two data layers** — Witness (inscription) and OP\_RETURN — cryptographically bound to each other. You cannot mint with a website. You cannot mint with an API. You must run a **full Bitcoin archive node (~850GB)** and the NEXUS Reactor software.
+Every mint transaction simultaneously writes to **two data layers** — Witness (inscription) and OP\_RETURN — cryptographically bound to each other. You cannot mint with a website. You cannot mint with an API. You must have **verifiable access to raw Bitcoin block data** (typically a full Bitcoin archive node ~850GB) and the NEXUS Reactor software.
 
 ---
 
@@ -51,6 +51,7 @@ Mint requires the Witness layer to embed the full node proof. Transfer only need
 │  │ pk:      <minter x-only pubkey>       │          │
 │  │ fnp:     <full node proof hash>       │          │
 │  │ opr:     SHA256(OP_RETURN data) ──────┼──┐       │
+│  │ proof:   <complete TwoRoundProof>     │  │       │
 │  └───────────────────────────────────────┘  │       │
 │                                             │       │
 │  OP_RETURN LAYER (ASCII readable)           │       │
@@ -70,21 +71,35 @@ Mint requires the Witness layer to embed the full node proof. Transfer only need
 
 ### On-Chain Data Format
 
-**Witness JSON** (embedded in Taproot inscription):
+**Witness JSON** (embedded in Taproot inscription, multi-chunk if >520 bytes):
 ```json
 {
   "p": "nexus",
   "op": "mint",
   "amt": 500,
-  "pk": "b4906faaf2724a59...",
-  "fnp": "a14075ce74aabea5...",
-  "opr": "02935680defa678f..."
+  "pk": "b4906faaf2724a591af6ae26aed26c355e65f70565d4c3c0665eeebcbc58332d",
+  "fnp": "9597d93d7cc4eb7b5bb38faae2e68733bcb7e0eed4713ea9bd5db1c9d1201f97",
+  "opr": "d61158fca158210c239eea6ea0182c6229785bf892ce8635b0e6389c2d2dfbb3",
+  "proof": {
+    "round1_hash": "2cf1baef431dff570be52c58078025ab937a1163a4b57fe374b444d6ad593aad",
+    "round1_ts": 1774636799,
+    "round1_heights": [698166, 228405, 783396, 450259, 474437, 310513, 126297, 20911, 454193, 438057],
+    "round2_hash": "33014a4c0fbdd0df6afb26241759df4abf76f4d98038761e8433dcb31901c45b",
+    "round2_ts": 1774636800,
+    "round2_heights": [73488, 836059, 883435, 915542, 151845, 434755, 204560, 510522, 932028, 344689],
+    "combined": "9597d93d7cc4eb7b5bb38faae2e68733bcb7e0eed4713ea9bd5db1c9d1201f97",
+    "block_hash": "0000000000000000000a3224d322dc7748829b4348ec3bab601e0ebd85a728a",
+    "block_height": 942504,
+    "pubkey": "03b4906faaf2724a591af6ae26aed26c355e65f70565d4c3c0665eeebcbc58332d"
+  }
 }
 ```
 
+The `proof` field contains the complete two-round full node proof, enabling any Indexer to independently recompute and verify the proof using its own Bitcoin Core RPC. See [`docs/PROTOCOL.md`](docs/PROTOCOL.md) for the full specification.
+
 **OP\_RETURN** (human-readable on any block explorer):
 ```
-NXS:MINT:500:w=b8a4cee75bc2a205:p=a14075ce74aabea5
+NXS:MINT:500:w=592aa5cd2c86d856:p=9597d93d7cc4eb7b
 ```
 
 ---
@@ -115,23 +130,22 @@ NXS:BATCH:<amount_1>,<amount_2>[,<amount_3>,...]
 ```
 
 Example: `NXS:BATCH:500,88` — buyer purchases 500 NXS from Seller A and 88 NXS from Seller B in one atomic transaction. Each amount maps to the corresponding seller input. The buyer address is read from OUTPUT[N] where N is the number of amounts. See [`docs/PROTOCOL.md` §16.5](docs/PROTOCOL.md) for full specification.
-```
 
 ---
 
 ## Full Node Proof
 
-You don't just claim you run a full node. You **prove** it.
+You don't just claim you run a full node. You **prove** it — and the proof is embedded on-chain for anyone to independently verify.
 
 The Reactor generates a **two-round cryptographic challenge**:
 
-1. **Round 1**: Your public key + latest block hash → derives 10 random historical block heights → reads raw bytes directly from your local `blk*.dat` files → extracts 32-byte slices at computed offsets → hashes everything into Round 1 proof
+1. **Round 1**: Your public key + latest block hash → derives 10 random historical block heights → reads raw block bytes → extracts 32-byte slices at computed offsets → hashes everything into Round 1 proof
 
 2. **Round 2**: Round 1 proof hash → derives 10 **different** block heights (unpredictable until Round 1 completes) → same extraction process → Round 2 proof
 
-3. **Both rounds must complete within 15 seconds**
+3. **Combined**: SHA256(round1\_hash + round2\_hash) → stored in `fnp` field
 
-Local NVMe SSD: ~100ms. Remote API relay: ~5-15 seconds (likely timeout).
+The **complete proof data** (both round hashes, timestamps, all 20 block heights, block hash, pubkey) is embedded in the on-chain Witness JSON. The Indexer independently recomputes both rounds using its own Bitcoin Core RPC and rejects any proof where the recomputed hashes don't match. Forgery of a valid proof without access to authentic raw block data is computationally infeasible.
 
 The Reactor also verifies your `blocks/` directory:
 - Total `blk*.dat` size > 500 GB
@@ -259,14 +273,15 @@ Live at **[bitcoinexus.xyz](https://bitcoinexus.xyz)** — minting progress, hol
 
 | Attack Vector | Defense |
 |--------------|---------|
-| API relay (no full node) | Two-round 15s window. Local ~100ms vs API ~5-15s |
+| Fake proof (random fnp) | Indexer independently recomputes both rounds via its own RPC. Fake hashes rejected. |
+| API relay (no full node) | Proof requires raw block data for 20 random blocks. Local ~1s vs remote ~5-15s. |
 | Pruned node disguise | Direct disk read: blk files > 500GB + early files exist |
 | Identity spoofing | `pk` field bound to Taproot signing key + Indexer cross-check |
 | Proof replay | Used-proof deduplication in Indexer |
-| Interlock tampering | Bidirectional SHA-256 hash verification (pk participates in hash) |
+| Interlock tampering | Bidirectional SHA-256 hash verification (pk + proof participate in hash) |
 | Mint ordering | Indexer assigns sequence by tx position in block — FCFS |
 | Bitcoin Core 30.x encryption | Auto-detect obfuscation key, XOR decrypt blk files |
-| DoS (spam invalid proofs) | Cheap checks first before expensive proof verification |
+| DoS (spam invalid proofs) | Cheap checks first; 20× RPC recomputation only after all lightweight checks pass |
 | Unlimited mint | Fixed `amt=500`, supply cap enforced, proof uniqueness |
 | Asset-bearing UTXO burn | Five-layer UTXO classification; dust outputs locked by default |
 | Batch proof collision | Each batch mint uses a different block height → unique proof |
@@ -276,13 +291,34 @@ Live at **[bitcoinexus.xyz](https://bitcoinexus.xyz)** — minting progress, hol
 
 ---
 
+## On-Chain Verification
+
+Every NEXUS mint is permanently visible on any block explorer. The complete proof data is embedded on-chain, enabling anyone with a Bitcoin full node to independently verify the minter had access to raw block data.
+
+**Example (Mint #8, Block 942512):**
+
+| Field | Value |
+|-------|-------|
+| Reveal TX | `9e6dc6cd450163bda86aeda59fc1d8b01adda05e5b3183dc5bd5dacab819f80d` |
+| Commit TX | `32fcb9aaeb88cc8bd1aff0f143299027dd02cd69f061d1f7359b7b831637405e` |
+| Minter | `bc1prh30dts9mn738hxz59v58z4cxutphrxfntfl8rxlh8fr2mhtc67sjy3t6z` |
+| OP\_RETURN | `NXS:MINT:500:w=592aa5cd2c86d856:p=9597d93d7cc4eb7b` |
+
+---
+
 ## FAQ
 
 **Q: Why require a full node to mint?**
 The barrier IS the value. If you're not willing to dedicate 850GB to Bitcoin, you're not the target audience.
 
 **Q: Can someone build a web minter?**
-No. The full node proof requires local `blk*.dat` reads within a 15-second window.
+No. The full node proof requires raw block data access. The complete proof is embedded on-chain and independently verified by the Indexer — any fabricated proof will fail recomputation.
+
+**Q: Can someone fake a mint?**
+No. The Indexer independently recomputes the full two-round proof using its own Bitcoin Core RPC. Forging a valid proof without access to authentic raw block data is computationally infeasible.
+
+**Q: Can someone use a remote RPC instead of their own node?**
+The protocol verifies access to raw block data, not physical disk locality. The security guarantee is that minting requires verifiable access to raw Bitcoin block data — not merely key ownership or transaction construction ability.
 
 **Q: Is there a premine?**
 No. Zero premine. All 21,000,000 NXS distributed through fair minting.
@@ -298,6 +334,10 @@ Yes. Any Taproot-compatible wallet (UniSat, OKX, Xverse) can transfer through th
 
 **Q: What is a Batch Transfer?**
 Multiple sell orders combined into one transaction using `NXS:BATCH`. More gas-efficient than separate transfers.
+
+**Q: What changed in v3.3?**
+The complete TwoRoundProof is now embedded in the on-chain Witness JSON. The Indexer independently recomputes and verifies every proof, eliminating the possibility of minting with fabricated proof hashes.
+
 ---
 
 ## Links
