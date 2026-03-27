@@ -24,6 +24,8 @@ pub struct WitnessPayload {
     pub pk: String,       // minter x-only pubkey (64 hex)
     pub fnp: String,      // combined proof hash (full 64 hex)
     pub opr: String,      // SHA256(OP_RETURN bytes) (full 64 hex)
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub proof: Option<TwoRoundProof>,  // v3.3: 完整证明上链，供 indexer 独立验证
 }
 
 /// OP_RETURN数据 (ASCII可读格式)
@@ -121,6 +123,7 @@ pub fn build_interlock(proof: &TwoRoundProof, pubkey_hex: &str) -> Result<Interl
         pk: pubkey_hex.to_string(),
         fnp: proof.combined.clone(),
         opr: String::new(),
+        proof: Some(proof.clone()),
     };
     let wit_core_json = serde_json::to_string(&wit_core).map_err(|e| e.to_string())?;
     let wit_core_hash: [u8; 32] = Sha256::digest(wit_core_json.as_bytes()).into();
@@ -146,6 +149,7 @@ pub fn build_interlock(proof: &TwoRoundProof, pubkey_hex: &str) -> Result<Interl
         pk: pubkey_hex.to_string(),
         fnp: proof.combined.clone(),
         opr: hex::encode(opr_hash),
+        proof: Some(proof.clone()),
     };
     let wit_final_json = serde_json::to_string(&wit_final).map_err(|e| e.to_string())?;
     let wit_final_hash: [u8; 32] = Sha256::digest(wit_final_json.as_bytes()).into();
@@ -182,6 +186,7 @@ pub fn verify_interlock(witness_json: &str, opreturn_bytes: &[u8]) -> Result<(),
         pk: wit.pk.clone(),
         fnp: wit.fnp.clone(),
         opr: String::new(),
+        proof: wit.proof.clone(),
     };
     let wit_core_json = serde_json::to_string(&wit_core)
         .map_err(|e| format!("序列化失败: {}", e))?;
