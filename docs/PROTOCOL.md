@@ -1,8 +1,8 @@
-# NEXUS Protocol Specification v3.0
+# NEXUS Protocol Specification v3.3
 
 ### The first dual-layer interlocking token on Bitcoin L1.
 
-Every mint transaction simultaneously writes to **two data layers** — Witness (inscription) and OP_RETURN — cryptographically bound to each other. You cannot mint with a website. You cannot mint with an API. You must run a **full Bitcoin archive node (~850 GB)** and the NEXUS Reactor software.
+Every mint transaction simultaneously writes to **two data layers** — Witness (inscription) and OP_RETURN — cryptographically bound to each other. You cannot mint with a website. You cannot mint with an API. You must have **verifiable access to raw Bitcoin block data** (typically a full Bitcoin archive node ~850 GB) and the NEXUS Reactor software.
 
 ---
 
@@ -18,6 +18,8 @@ Every Bitcoin token protocol so far has used **one** data layer:
 | **NEXUS**  | **Witness + OP_RETURN, interlocked** | **No. Full node only.** |
 
 NEXUS is the first protocol that requires **both layers simultaneously**, with each layer containing the SHA-256 hash of the other. No existing tool — ord, rune cli, or any web minter — can construct this transaction. Only the NEXUS Reactor can.
+
+NEXUS minting requires verifiable access to raw Bitcoin block data and deterministic reconstruction of multi-round proofs, effectively binding mint eligibility to full-node-equivalent data capabilities rather than mere key ownership. Forgery of a valid proof without access to authentic block data is computationally infeasible, as it would require replicating Bitcoin's block-level data integrity.
 
 NEXUS defines three on-chain operations, each using the appropriate data layer(s):
 
@@ -62,6 +64,7 @@ A single NEXUS mint consists of two on-chain transactions: **Commit** and **Reve
 │  │ pk:      <minter x-only pubkey>         │            │
 │  │ fnp:     <full node proof hash>         │            │
 │  │ opr:     SHA256(OP_RETURN data) ────────┼──┐         │
+│  │ proof:   <full TwoRoundProof>           │  │         │
 │  └─────────────────────────────────────────┘  │         │
 │                                               │         │
 │  OP_RETURN LAYER (ASCII readable)             │         │
@@ -81,34 +84,62 @@ A single NEXUS mint consists of two on-chain transactions: **Commit** and **Reve
 
 ### 3.2 Witness Layer — Inscription JSON
 
-Embedded in a Taproot inscription (Ordinals-compatible envelope), the Witness layer carries the following JSON:
+Embedded in a Taproot inscription (Ordinals-compatible envelope), the Witness layer carries the following JSON. For payloads exceeding 520 bytes, the data is split into multiple push chunks within the inscription script (standard Ordinals multi-chunk encoding).
 
 ```json
 {
-  "p":   "nexus",
-  "op":  "mint",
+  "p": "nexus",
+  "op": "mint",
   "amt": 500,
-  "pk":  "b4906faaf2724a59...",
-  "fnp": "a14075ce74aabea5...",
-  "opr": "02935680defa678f..."
+  "pk": "b4906faaf2724a591af6ae26aed26c355e65f70565d4c3c0665eeebcbc58332d",
+  "fnp": "9597d93d7cc4eb7b5bb38faae2e68733bcb7e0eed4713ea9bd5db1c9d1201f97",
+  "opr": "d61158fca158210c239eea6ea0182c6229785bf892ce8635b0e6389c2d2dfbb3",
+  "proof": {
+    "round1_hash": "2cf1baef431dff570be52c58078025ab937a1163a4b57fe374b444d6ad593aad",
+    "round1_ts": 1774636799,
+    "round1_heights": [698166, 228405, 783396, 450259, 474437, 310513, 126297, 20911, 454193, 438057],
+    "round2_hash": "33014a4c0fbdd0df6afb26241759df4abf76f4d98038761e8433dcb31901c45b",
+    "round2_ts": 1774636800,
+    "round2_heights": [73488, 836059, 883435, 915542, 151845, 434755, 204560, 510522, 932028, 344689],
+    "combined": "9597d93d7cc4eb7b5bb38faae2e68733bcb7e0eed4713ea9bd5db1c9d1201f97",
+    "block_hash": "0000000000000000000a3224d322dc7748829b4348ec3bab601e0ebd85a728a",
+    "block_height": 942504,
+    "pubkey": "03b4906faaf2724a591af6ae26aed26c355e65f70565d4c3c0665eeebcbc58332d"
+  }
 }
 ```
 
-| Field | Type   | Description                                                        |
-| ----- | ------ | ------------------------------------------------------------------ |
-| `p`   | string | Protocol identifier. Must be `"nexus"`.                            |
-| `op`  | string | Operation. Must be `"mint"`.                                       |
-| `amt` | int    | Amount. Must be `500`.                                             |
-| `pk`  | string | Minter's x-only public key (64 hex chars). Bound to the Taproot signing key. |
-| `fnp` | string | Full node proof hash (64 hex chars). Output of the two-round challenge. |
-| `opr` | string | SHA-256 hash of the OP_RETURN payload (64 hex chars). Interlock anchor. |
+| Field   | Type   | Description                                                        |
+| ------- | ------ | ------------------------------------------------------------------ |
+| `p`     | string | Protocol identifier. Must be `"nexus"`.                            |
+| `op`    | string | Operation. Must be `"mint"`.                                       |
+| `amt`   | int    | Amount. Must be `500`.                                             |
+| `pk`    | string | Minter's x-only public key (64 hex chars). Bound to the Taproot signing key. |
+| `fnp`   | string | Full node proof combined hash (64 hex chars). Must equal `proof.combined`. |
+| `opr`   | string | SHA-256 hash of the OP_RETURN payload (64 hex chars). Interlock anchor. |
+| `proof` | object | Complete two-round full node proof (see §4). Embedded on-chain for independent Indexer verification. Required from block 941950 onward. |
+
+#### Proof Object Fields
+
+| Field             | Type     | Description                                                              |
+| ----------------- | -------- | ------------------------------------------------------------------------ |
+| `round1_hash`     | string   | SHA-256 hash of Round 1 computation (64 hex chars).                      |
+| `round1_ts`       | int      | Unix timestamp when Round 1 was computed.                                |
+| `round1_heights`  | int[]    | 10 deterministically-derived block heights used in Round 1.              |
+| `round2_hash`     | string   | SHA-256 hash of Round 2 computation (64 hex chars).                      |
+| `round2_ts`       | int      | Unix timestamp when Round 2 was computed.                                |
+| `round2_heights`  | int[]    | 10 deterministically-derived block heights used in Round 2.              |
+| `combined`        | string   | SHA-256(round1_hash + round2_hash). Must equal the `fnp` field.          |
+| `block_hash`      | string   | Bitcoin block hash used as the proof seed (64 hex chars).                |
+| `block_height`    | int      | Block height corresponding to `block_hash`.                              |
+| `pubkey`          | string   | Minter's compressed public key (66 hex chars, with 02/03 prefix).        |
 
 ### 3.3 OP_RETURN Layer — ASCII Readable
 
 The OP_RETURN output carries a human-readable ASCII string:
 
 ```
-NXS:MINT:500:w=b8a4cee75bc2a205:p=a14075ce74aabea5
+NXS:MINT:500:w=592aa5cd2c86d856:p=9597d93d7cc4eb7b
 ```
 
 | Segment         | Description                                                                 |
@@ -126,7 +157,7 @@ The dual-layer interlock is bidirectional:
 1. **Witness → OP_RETURN**: The `opr` field in the inscription JSON equals `SHA256(OP_RETURN_payload)`.
 2. **OP_RETURN → Witness**: The `w=` value in the OP_RETURN equals the first 8 bytes of `SHA256(Witness_JSON_without_opr)`.
 
-The `pk` field participates in the Witness hash, meaning the minter's identity is cryptographically embedded in the interlock. Changing the public key breaks the hash chain.
+The `pk` field and the `proof` object both participate in the Witness hash, meaning the minter's identity and full node proof are cryptographically embedded in the interlock. Changing any field breaks the hash chain.
 
 ### 3.5 Transaction Outputs
 
@@ -144,6 +175,8 @@ NEXUS uses the standard Ordinals two-phase inscription pattern:
 
 1. **Commit TX**: Sends BTC to a Taproot address whose script tree contains the inscription envelope (JSON payload). Supports multiple UTXO inputs with automatic change output.
 2. **Reveal TX**: Spends the Commit output via the script path, exposing the inscription on-chain. The Reveal TX also attaches the OP_RETURN output and the protocol fee output.
+
+Since the Witness JSON (including the full proof object) may exceed 520 bytes, the inscription body is encoded using multiple push operations within the script envelope. The Indexer's extraction logic reassembles these chunks into the complete JSON payload.
 
 ### 3.7 Deploy Transaction
 
@@ -209,21 +242,82 @@ The Deploy transaction follows the same Commit + Reveal pattern as Mint (§3.6),
 
 ## 4. Full Node Proof
 
-You don't just claim you run a full node. You **prove** it.
+You don't just claim you run a full node. You **prove** it — and the proof is embedded on-chain for anyone to independently verify.
 
 ### 4.1 Two-Round Cryptographic Challenge
 
-The Reactor generates a proof that can only be produced by a machine with direct local access to the full blockchain data:
+The Reactor generates a proof that can only be produced by a machine with direct access to raw Bitcoin block data:
 
-1. **Round 1**: Minter's x-only public key + block hash → deterministically derives 10 random historical block heights → reads raw bytes directly from local `blk*.dat` files → extracts 32-byte slices at computed offsets → hashes everything into Round 1 proof.
+1. **Round 1**: Minter's compressed public key + block hash → deterministically derives 10 random historical block heights → reads raw block bytes via local disk or RPC → extracts 32-byte slices at computed offsets → hashes everything into Round 1 proof.
 2. **Round 2**: Round 1 proof hash → derives 10 **different** block heights (unpredictable until Round 1 completes) → same extraction process → produces Round 2 proof.
-3. **Both rounds must complete within 15 seconds.**
+3. **Combined**: `SHA256(round1_hash + round2_hash)` → final proof hash stored in `fnp` field.
 
 Performance benchmarks:
-- Local NVMe SSD: ~100 ms
-- Remote API relay: ~5–15 seconds (likely timeout)
+- Local NVMe SSD: ~100 ms – 2 seconds
+- Remote API relay: ~5–15 seconds (dependent on bandwidth and API capabilities)
 
-### 4.2 Disk Verification
+### 4.2 On-Chain Proof Embedding (v3.3)
+
+Starting from block **941950**, the complete `TwoRoundProof` object is serialized into the Witness JSON inscription. This enables **independent verification** by any Indexer:
+
+1. The Indexer extracts the full `proof` object from the on-chain Witness JSON.
+2. Using its own Bitcoin Core RPC connection, the Indexer reads the raw block data for all 20 challenge heights.
+3. The Indexer deterministically recomputes both rounds from scratch:
+   - Derives expected heights from `SHA256(block_hash + pubkey + domain)`
+   - Compares derived heights against the submitted `round1_heights` / `round2_heights`
+   - Reads raw block bytes, extracts 32-byte slices at computed offsets
+   - Computes the round hashes and compares against `round1_hash` / `round2_hash`
+   - Verifies `SHA256(round1_hash + round2_hash) == combined == fnp`
+4. If any step fails, the mint is rejected.
+
+**Backward compatibility**: Mints before block 941950 do not contain the `proof` field and are validated using the legacy rule set (format + interlock + fee + identity + proof-hash uniqueness). Mints from block 941950 onward **must** include the complete proof object.
+
+Additional on-chain data cost: ~555 bytes in the Witness layer (~138 vB with witness discount), approximately 138 sats at 1 sat/vB.
+
+### 4.3 Verification Algorithm (Pseudocode)
+
+```
+function verify_proof(proof, get_raw_block):
+    // Time window check
+    assert proof.round2_ts - proof.round1_ts ≤ 15 seconds
+
+    // Round 1: recompute from scratch
+    seed1 = SHA256(proof.block_hash + proof.pubkey + "r1")
+    expected_heights1 = derive_heights(seed1, proof.block_height)
+    assert expected_heights1 == proof.round1_heights
+
+    preimage1 = []
+    for height in expected_heights1:
+        raw_block = get_raw_block(height)       // Indexer reads via its own RPC
+        body = raw_block[80:]                    // Skip 80-byte header
+        offset = SHA256(seed1 + height) % len(body)
+        slice = body[offset : offset+32]
+        preimage1.append(slice)
+    preimage1.append(proof.pubkey)
+    preimage1.append(seed1)
+    assert SHA256(preimage1) == proof.round1_hash
+
+    // Round 2: recompute (seed derived from Round 1 result)
+    seed2 = SHA256(proof.round1_hash + proof.pubkey + "r2")
+    expected_heights2 = derive_heights(seed2, proof.block_height)
+    assert expected_heights2 == proof.round2_heights
+
+    preimage2 = []
+    for height in expected_heights2:
+        raw_block = get_raw_block(height)
+        body = raw_block[80:]
+        offset = SHA256(seed2 + height) % len(body)
+        slice = body[offset : offset+32]
+        preimage2.append(slice)
+    preimage2.append(proof.pubkey)
+    preimage2.append(seed2)
+    assert SHA256(preimage2) == proof.round2_hash
+
+    // Combined hash
+    assert SHA256(proof.round1_hash + proof.round2_hash) == proof.combined
+```
+
+### 4.4 Disk Verification
 
 Before generating the proof, the Reactor verifies the local `blocks/` directory:
 
@@ -234,7 +328,7 @@ Before generating the proof, the Reactor verifies the local `blocks/` directory:
 | Early files present          | `blk00000.dat` through `blk00009.dat` must exist (pruned nodes delete these) |
 | Mainnet magic bytes          | Valid magic `0xF9BEB4D9` (supports Bitcoin Core 30.x XOR obfuscation)      |
 
-### 4.3 Bitcoin Core 30.x XOR Obfuscation Support
+### 4.5 Bitcoin Core 30.x XOR Obfuscation Support
 
 Bitcoin Core 30.0+ introduced XOR obfuscation for `blk*.dat` files. The Reactor:
 
@@ -244,7 +338,7 @@ Bitcoin Core 30.0+ introduced XOR obfuscation for `blk*.dat` files. The Reactor:
 
 This is handled automatically — no user configuration required.
 
-### 4.4 Node Auto-Detection
+### 4.6 Node Auto-Detection
 
 The Reactor (`node_detect.rs`) automatically locates an existing Bitcoin node:
 
@@ -253,7 +347,7 @@ The Reactor (`node_detect.rs`) automatically locates an existing Bitcoin node:
 - Reads saved configuration from `nexus_config.json`.
 - Verifies RPC connectivity.
 
-### 4.5 Proof Differentiation for Batch Minting
+### 4.7 Proof Differentiation for Batch Minting
 
 The proof seed is derived from `SHA256(block_hash + pubkey + domain)`. Since the same pubkey + same block_hash produces the same proof, batch minting uses a different block height for each mint in the batch:
 
@@ -264,6 +358,18 @@ Mint #3: block_height - 2               → unique seed → unique proof
 ```
 
 Different block hashes produce entirely different challenge heights and proof outputs. The Indexer's used-proof table sees each as a distinct entry — no replay conflict.
+
+### 4.8 Security Properties
+
+The on-chain proof embedding ensures the following security properties:
+
+| Property | Guarantee |
+| --- | --- |
+| **Unforgeability** | A valid proof cannot be constructed without access to authentic raw Bitcoin block data. Forging a proof would require replicating Bitcoin's block-level data integrity. |
+| **Independent Verifiability** | Any Indexer with RPC access to a Bitcoin full node can independently recompute and verify the proof from on-chain data alone. No trust in the minter is required. |
+| **Determinism** | Given the same `block_hash` and `pubkey`, the challenge heights are uniquely determined. The Indexer derives the expected heights and rejects any mismatch. |
+| **Replay Protection** | Each `proof.combined` hash is stored in the Indexer's used-proof table. Submitting the same proof twice is rejected. |
+| **Identity Binding** | The `pubkey` field participates in seed derivation. A proof generated for one key cannot be reused by another. |
 
 ---
 
@@ -369,7 +475,7 @@ The Reactor supports minting multiple NXS tokens in a single session. Each mint 
 4. Displays: available balance, maximum mintable count, cost per mint, total cost.
 5. User enters desired count (≤ max).
 6. Reactor executes N mints sequentially:
-   - Each mint uses `block_height - i` for proof generation (see §4.5).
+   - Each mint uses `block_height - i` for proof generation (see §4.7).
    - Each Commit TX uses the previous Commit's change as input (chain-linked).
    - Each Reveal TX is broadcast immediately after its Commit.
    - UTXO records are updated after each successful broadcast.
@@ -418,12 +524,12 @@ A mint is valid if and only if **all 7 rules** pass. Rules are ordered by comput
 
 | #  | Rule           | Description                                                                                             |
 | -- | -------------- | ------------------------------------------------------------------------------------------------------- |
-| 1  | **Format**     | Witness inscription contains `"nexus"` protocol identifier and valid JSON with all required fields (`p`, `op`, `amt`, `pk`, `fnp`, `opr`). |
+| 1  | **Format**     | Witness inscription contains `"nexus"` protocol identifier and valid JSON with all required fields (`p`, `op`, `amt`, `pk`, `fnp`, `opr`, and `proof` for blocks ≥ 941950). |
 | 2  | **OP_RETURN**  | Starts with `NXS:` prefix. Correct ASCII format: `NXS:MINT:500:w=<16hex>:p=<16hex>`.                   |
 | 3  | **Fee**        | Exactly 5,000 sats sent to the protocol fee address. Checked early to reject spam.                      |
 | 4  | **Interlock**  | Dual-layer hashes match: `SHA256(OP_RETURN) == witness.opr` **AND** `SHA256(witness_without_opr)[..8] == OP_RETURN.w`. |
 | 5  | **Identity**   | `pk` field in JSON must match the Taproot x-only public key that signed the transaction.                |
-| 6  | **Proof**      | Full node proof passes two-round verification with precheck (heights count, time window, field lengths) + replay protection via used-proof table. |
+| 6  | **Proof**      | Full node proof verification (blocks ≥ 941950): extract complete `TwoRoundProof` from on-chain data → pre-check heights count, time window, field lengths → verify `proof.combined == fnp` → Indexer independently recomputes both rounds using its own RPC block data → all hashes must match. Replay protection via used-proof table. For blocks < 941950: legacy validation (proof hash uniqueness only). |
 | 7  | **Supply**     | Total mints ≤ 42,000 (supply cap not exceeded).                                                         |
 
 ### 8.2 DoS Prefilter Strategy
@@ -433,18 +539,30 @@ The rule ordering is deliberate:
 - **Rules 1–3** (Format, OP_RETURN, Fee) are string/integer checks — near zero cost. They eliminate the vast majority of irrelevant transactions.
 - **Rule 4** (Interlock) requires two SHA-256 computations — still cheap but filters out any malformed attempts.
 - **Rule 5** (Identity) requires public key extraction and comparison.
-- **Rule 6** (Proof) is the most expensive — two-round verification with disk reads. Only reached if all cheaper checks pass.
+- **Rule 6** (Proof) is the most expensive — full two-round recomputation with 20 RPC `getblock` calls. Only reached if all cheaper checks pass. For DoS protection, lightweight pre-checks (heights count, time window, field lengths) run before the expensive recomputation.
 - **Rule 7** (Supply) is a simple counter check, placed last because it only matters if everything else is valid.
 
-### 8.3 Sequence Assignment
+### 8.3 Inscription Body Extraction (Multi-Chunk)
+
+Since the Witness JSON with embedded proof exceeds 520 bytes, the inscription body is split into multiple push chunks in the Taproot script. The Indexer's extraction logic:
+
+1. Locates `OP_IF` in the witness script.
+2. Skips the protocol identifier, content-type indicator, and separator pushes.
+3. After the body separator (`OP_0` following 3+ pushes), concatenates all subsequent push data until `OP_ENDIF`.
+4. Supports `OP_PUSHBYTES_1..75`, `OP_PUSHDATA1`, `OP_PUSHDATA2`, and `OP_PUSHDATA4` encodings.
+5. Parses the reassembled bytes as UTF-8 JSON.
+
+This is fully backward-compatible with single-chunk inscriptions (mints before block 941950).
+
+### 8.4 Sequence Assignment
 
 Mint sequence numbers are assigned by the Indexer based on **transaction position within each block**. The ordering rule is: first confirmed in a block, first assigned. This is a strict FCFS (first come, first served) model.
 
-### 8.4 Replay Protection
+### 8.5 Replay Protection
 
-Each full node proof is unique (derived from the minter's public key + block hash + random block data). The Indexer maintains a **used-proof table** to reject any proof that has been seen before. Batch mints produce distinct proofs because each uses a different block height (§4.5).
+Each full node proof is unique (derived from the minter's public key + block hash + random block data). The Indexer maintains a **used-proof table** to reject any proof that has been seen before. Batch mints produce distinct proofs because each uses a different block height (§4.7).
 
-### 8.5 HTTP API Service
+### 8.6 HTTP API Service
 
 The Indexer runs as a standalone HTTP service (`src/bin/indexer.rs`) built with **actix-web**, with a response cache layer (RwLock) for high-concurrency performance and CORS enabled for cross-origin frontend access. All endpoints use the `/api` prefix, with legacy non-prefixed routes maintained for backward compatibility.
 
@@ -514,17 +632,18 @@ A minter must fund their Taproot address with at least **10,000 sats**:
          │
 [2] Generate Proof  Two-round challenge → 20 random blocks → 15s window
          │
-[3] Build Interlock Witness JSON (with pk) ←SHA256→ OP_RETURN (ASCII)
+[3] Build Interlock Witness JSON (with pk + proof) ←SHA256→ OP_RETURN (ASCII)
          │
 [4] UTXO Select     Load records → 5-layer classify → select + merge inputs
          │
 [5] Commit TX       BTC → Taproot address with inscription script tree + change
-         │
+         │                 (multi-chunk if payload > 520 bytes)
 [6] Reveal TX       Script-path spend → inscription + OP_RETURN + fee
          │
 [7] Record UTXOs    Reveal output[0] → nxs_mints.json | Change → nxs_change.json
          │
-[8] Confirmed       Block inclusion → Indexer validates 7 rules → 500 NXS credited
+[8] Confirmed       Block inclusion → Indexer validates 7 rules
+         │                 (including full proof recomputation) → 500 NXS credited
 ```
 
 ### 10.2 Batch Mint
@@ -540,7 +659,7 @@ A minter must fund their Taproot address with at least **10,000 sats**:
     │  FOR i = 0 to count-1:                          │
     │    [a] Get block hash at (latest_height - i)    │
     │    [b] Generate proof (unique per block)        │
-    │    [c] Build interlock + inscription             │
+    │    [c] Build interlock + inscription (with proof)│
     │    [d] Commit TX (input = previous change)       │
     │    [e] Reveal TX                                 │
     │    [f] Record mint + change                      │
@@ -558,17 +677,18 @@ A minter must fund their Taproot address with at least **10,000 sats**:
 
 | Attack Vector                   | Defense                                                                          |
 | ------------------------------- | -------------------------------------------------------------------------------- |
-| API relay (no full node)        | Two-round 15s window. Local NVMe ~100ms vs remote API ~5–15s (timeout).          |
+| Fake proof (random fnp)         | Indexer independently recomputes both rounds using its own RPC block data. Random/fake proof hashes will not match the recomputed values. (Rule 6, §4.2) |
+| API relay (no full node)        | Proof requires raw block data access for 20 random blocks. Local NVMe ~1s vs remote API ~5–15s. While remote RPC access is theoretically possible, it requires full-node-equivalent data capabilities. |
 | Pruned node disguise            | Direct disk read: blk files > 500GB + early files (`blk00000–00009`) must exist. |
 | Identity spoofing               | `pk` field bound to Taproot signing key + Indexer cross-check (Rule 5).          |
 | Proof replay                    | Used-proof deduplication table in Indexer (Rule 6).                              |
-| Interlock tampering             | Bidirectional SHA-256 verification; `pk` participates in hash (Rule 4).          |
+| Interlock tampering             | Bidirectional SHA-256 verification; `pk` and `proof` participate in hash (Rule 4). |
 | Mint ordering manipulation      | Indexer assigns sequence by tx position in block — strict FCFS.                  |
 | Bitcoin Core 30.x encryption    | Auto-detect XOR obfuscation key, transparent decrypt of blk files.               |
-| DoS (spam invalid proofs)       | Cheap checks first (fee, format, interlock) before expensive proof verification. |
+| DoS (spam invalid proofs)       | Cheap checks first (fee, format, interlock) before expensive proof recomputation. Only valid-looking transactions trigger the 20× RPC getblock calls. |
 | Unlimited mint attempts         | Fixed `amt=500`, supply cap enforced at 42,000 mints, proof uniqueness.          |
 | Asset-bearing UTXO burn         | Five-layer UTXO classification; 330/546 sats outputs locked by default (§6).     |
-| Batch proof collision           | Each batch mint uses a different block height → unique proof hash (§4.5).        |
+| Batch proof collision           | Each batch mint uses a different block height → unique proof hash (§4.7).        |
 | Transfer double-spend           | 3-block confirmation rule. Pending transfers lock sender's balance on broadcast. |
 | Transfer insufficient balance   | Indexer checks available_balance = total - locked before accepting transfer.     |
 | Batch transfer parsing attack   | Amount count must equal seller input count; any mismatch invalidates the entire batch. |
@@ -583,14 +703,14 @@ nexus-protocol/
 │   ├── main.rs          # Reactor CLI — menu + single/batch mint engine
 │   ├── lib.rs           # Module exports
 │   ├── constants.rs     # Protocol parameters (mainnet/regtest via feature flag)
-│   ├── proof.rs         # Full node proof + Bitcoin Core 30.x XOR obfuscation
-│   ├── transaction.rs   # Dual-layer interlock + pk identity binding
+│   ├── proof.rs         # Full node proof generation + verification + Bitcoin Core 30.x XOR
+│   ├── transaction.rs   # Dual-layer interlock + pk identity binding + proof embedding
 │   ├── indexer.rs       # Transaction validation engine (7 rules + DoS prefilter)
 │   ├── utxo.rs          # UTXO safety classification + selection + record tracking
 │   ├── node_detect.rs   # Auto-detect Bitcoin node + path management
 │   ├── ui.rs            # Terminal UI with color
 │   └── bin/
-│       └── indexer.rs   # Indexer HTTP service (actix-web, 10 API endpoints + cache layer)
+│       └── indexer.rs   # Indexer HTTP service (actix-web, API + proof verification + cache)
 ├── scripts/
 │   └── wallet_gen.py    # BIP39/86/84/49 wallet generator (bip_utils)
 ├── docs/
@@ -644,22 +764,44 @@ Every NEXUS mint is permanently visible on any block explorer:
 
 **OP_RETURN (human-readable):**
 ```
-NXS:MINT:500:w=b8a4cee75bc2a205:p=a14075ce74aabea5
+NXS:MINT:500:w=592aa5cd2c86d856:p=9597d93d7cc4eb7b
 ```
 
-**Witness inscription (JSON):**
+**Witness inscription (JSON with embedded proof):**
 ```json
 {
   "p": "nexus",
   "op": "mint",
   "amt": 500,
   "pk": "b4906faaf2724a591af6ae26aed26c355e65f70565d4c3c0665eeebcbc58332d",
-  "fnp": "a14075ce74aabea522d36247e144ea019bda1cb79393323f1133ee3b59344c9f",
-  "opr": "02935680defa678f4df10356b5254c0966718d58280e5d3ca89ac05cc7002ba3"
+  "fnp": "9597d93d7cc4eb7b5bb38faae2e68733bcb7e0eed4713ea9bd5db1c9d1201f97",
+  "opr": "d61158fca158210c239eea6ea0182c6229785bf892ce8635b0e6389c2d2dfbb3",
+  "proof": {
+    "round1_hash": "2cf1baef431dff570be52c58078025ab937a1163a4b57fe374b444d6ad593aad",
+    "round1_ts": 1774636799,
+    "round1_heights": [698166, 228405, 783396, 450259, 474437, 310513, 126297, 20911, 454193, 438057],
+    "round2_hash": "33014a4c0fbdd0df6afb26241759df4abf76f4d98038761e8433dcb31901c45b",
+    "round2_ts": 1774636800,
+    "round2_heights": [73488, 836059, 883435, 915542, 151845, 434755, 204560, 510522, 932028, 344689],
+    "combined": "9597d93d7cc4eb7b5bb38faae2e68733bcb7e0eed4713ea9bd5db1c9d1201f97",
+    "block_hash": "0000000000000000000a3224d322dc7748829b4348ec3bab601e0ebd85a728a",
+    "block_height": 942504,
+    "pubkey": "03b4906faaf2724a591af6ae26aed26c355e65f70565d4c3c0665eeebcbc58332d"
+  }
 }
 ```
 
-Both layers cross-reference each other. The `pk` field binds the mint to the signing key. Verifiable by anyone running a Bitcoin full node.
+Both layers cross-reference each other. The `pk` field binds the mint to the signing key. The `proof` object enables any full node operator to independently verify the minter had access to raw block data. Verifiable by anyone running a Bitcoin full node.
+
+#### On-Chain Reference (with proof)
+
+| Transaction | TXID |
+| ----------- | ---- |
+| Commit TX   | `32fcb9aaeb88cc8bd1aff0f143299027dd02cd69f061d1f7359b7b831637405e` |
+| Reveal TX   | `9e6dc6cd450163bda86aeda59fc1d8b01adda05e5b3183dc5bd5dacab819f80d` |
+| Block       | 942512 |
+| Minter      | `bc1prh30dts9mn738hxz59v58z4cxutphrxfntfl8rxlh8fr2mhtc67sjy3t6z` |
+| Mint #      | 8 |
 
 ---
 
@@ -831,10 +973,13 @@ A sender cannot transfer or list more NXS than their available balance. This pre
 The barrier IS the value. Bitcoin was meant to be run by node operators, not website clickers. If you're not willing to dedicate 850 GB to Bitcoin, you're not the target audience.
 
 **Q: Can someone build a web minter?**
-No. The full node proof requires reading raw bytes from local `blk*.dat` files at random offsets determined by the latest block hash. No public API provides this data in the required format within the 15-second window.
+No. The full node proof requires reading raw bytes from Bitcoin block files at random offsets determined by the latest block hash. The complete proof is embedded on-chain and independently verified by the Indexer — any fabricated proof will fail recomputation.
 
 **Q: Can someone fake a mint?**
-No. The Indexer validates 7 rules including dual-layer hash interlock, identity binding (pk must match signing key), proof uniqueness, and fee payment. Forging any single element breaks the chain.
+No. The Indexer independently recomputes the full two-round proof from on-chain data using its own Bitcoin Core RPC. Forging a valid proof without access to authentic raw block data is computationally infeasible — it would require replicating Bitcoin's block-level data integrity. Additionally, the Indexer validates 7 rules including dual-layer hash interlock, identity binding (pk must match signing key), proof uniqueness, and fee payment.
+
+**Q: Can someone use a remote RPC instead of running their own node?**
+Technically, the protocol verifies access to raw block data, not physical disk locality. An attacker with paid RPC access to a full archive node could theoretically construct a valid proof. However, this means they are using full-node-equivalent data capabilities — the security guarantee is that minting requires verifiable access to raw Bitcoin block data, not merely key ownership or transaction construction ability.
 
 **Q: Is there a premine or team allocation?**
 No. Zero premine. The protocol fee address receives 5,000 sats per mint — that's it. All 21,000,000 NXS are distributed through fair minting.
@@ -871,6 +1016,12 @@ Yes. Transfer only requires creating a standard Bitcoin transaction with an OP_R
 
 **Q: What is a Batch Transfer?**
 When a buyer purchases multiple sell orders at once, the market combines them into a single Bitcoin transaction using `NXS:BATCH:<amt1>,<amt2>,...` in the OP_RETURN. Each amount maps to the corresponding seller input. The buyer address is read from OUTPUT[N] where N is the number of amounts. This is more gas-efficient than executing multiple separate transfers.
+
+**Q: Why does the inscription use multiple push chunks?**
+The complete Witness JSON with embedded proof is approximately 820 bytes, which exceeds Bitcoin's 520-byte push data limit for a single push operation. The inscription body is automatically split into multiple chunks (e.g., 520 + 300 bytes) within the Taproot script envelope. This is the same technique used by Ordinals for large inscriptions. The Indexer's extraction logic reassembles these chunks transparently.
+
+**Q: What changed in v3.3?**
+The complete TwoRoundProof is now embedded in the on-chain Witness JSON (previously only the 32-byte combined hash was stored). This enables the Indexer to independently recompute and verify every proof using its own Bitcoin Core RPC, eliminating the possibility of minting with fabricated proof hashes. Mints before block 941950 are grandfathered under the legacy validation rules for backward compatibility.
 
 ---
 
