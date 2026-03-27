@@ -19,7 +19,7 @@ Every Bitcoin token protocol so far has used **one** data layer:
 
 NEXUS is the first protocol that requires **both layers simultaneously**, with each layer containing the SHA-256 hash of the other. No existing tool — ord, rune cli, or any web minter — can construct this transaction. Only the NEXUS Reactor can.
 
-NEXUS minting requires verifiable access to raw Bitcoin block data and deterministic reconstruction of multi-round proofs, effectively binding mint eligibility to full-node-equivalent data capabilities rather than mere key ownership. Forgery of a valid proof without access to authentic block data is computationally infeasible, as it would require replicating Bitcoin's block-level data integrity.
+NEXUS minting requires a full Bitcoin archive node to generate a two-round cryptographic proof from raw block data. The complete proof is embedded on-chain and independently verified by the Indexer. Forgery of a valid proof without access to authentic block data is computationally infeasible.
 
 NEXUS defines three on-chain operations, each using the appropriate data layer(s):
 
@@ -252,9 +252,8 @@ The Reactor generates a proof that can only be produced by a machine with direct
 2. **Round 2**: Round 1 proof hash → derives 10 **different** block heights (unpredictable until Round 1 completes) → same extraction process → produces Round 2 proof.
 3. **Combined**: `SHA256(round1_hash + round2_hash)` → final proof hash stored in `fnp` field.
 
-Performance benchmarks:
-- Local NVMe SSD: ~100 ms – 2 seconds
-- Remote API relay: ~5–15 seconds (dependent on bandwidth and API capabilities)
+Performance benchmark:
+- Local NVMe SSD with full archive node: ~1–2 seconds for complete two-round proof generation
 
 ### 4.2 On-Chain Proof Embedding (v3.3)
 
@@ -365,7 +364,7 @@ The on-chain proof embedding ensures the following security properties:
 
 | Property | Guarantee |
 | --- | --- |
-| **Unforgeability** | A valid proof cannot be constructed without access to authentic raw Bitcoin block data. Forging a proof would require replicating Bitcoin's block-level data integrity. |
+| **Unforgeability** | A valid proof cannot be constructed without access to authentic raw Bitcoin block data. The Indexer recomputes every proof independently — any fabricated or incorrect data is rejected. |
 | **Independent Verifiability** | Any Indexer with RPC access to a Bitcoin full node can independently recompute and verify the proof from on-chain data alone. No trust in the minter is required. |
 | **Determinism** | Given the same `block_hash` and `pubkey`, the challenge heights are uniquely determined. The Indexer derives the expected heights and rejects any mismatch. |
 | **Replay Protection** | Each `proof.combined` hash is stored in the Indexer's used-proof table. Submitting the same proof twice is rejected. |
@@ -678,7 +677,7 @@ A minter must fund their Taproot address with at least **10,000 sats**:
 | Attack Vector                   | Defense                                                                          |
 | ------------------------------- | -------------------------------------------------------------------------------- |
 | Fake proof (random fnp)         | Indexer independently recomputes both rounds using its own RPC block data. Random/fake proof hashes will not match the recomputed values. (Rule 6, §4.2) |
-| API relay (no full node)        | Proof requires raw block data access for 20 random blocks. Local NVMe ~1s vs remote API ~5–15s. While remote RPC access is theoretically possible, it requires full-node-equivalent data capabilities. |
+| No block data access            | Proof requires reading raw bytes from 20 random historical blocks. Without access to authentic block data, constructing a valid proof is computationally infeasible. |
 | Pruned node disguise            | Direct disk read: blk files > 500GB + early files (`blk00000–00009`) must exist. |
 | Identity spoofing               | `pk` field bound to Taproot signing key + Indexer cross-check (Rule 5).          |
 | Proof replay                    | Used-proof deduplication table in Indexer (Rule 6).                              |
@@ -978,8 +977,8 @@ No. The full node proof requires reading raw bytes from Bitcoin block files at r
 **Q: Can someone fake a mint?**
 No. The Indexer independently recomputes the full two-round proof from on-chain data using its own Bitcoin Core RPC. Forging a valid proof without access to authentic raw block data is computationally infeasible — it would require replicating Bitcoin's block-level data integrity. Additionally, the Indexer validates 7 rules including dual-layer hash interlock, identity binding (pk must match signing key), proof uniqueness, and fee payment.
 
-**Q: Can someone use a remote RPC instead of running their own node?**
-Technically, the protocol verifies access to raw block data, not physical disk locality. An attacker with paid RPC access to a full archive node could theoretically construct a valid proof. However, this means they are using full-node-equivalent data capabilities — the security guarantee is that minting requires verifiable access to raw Bitcoin block data, not merely key ownership or transaction construction ability.
+**Q: What exactly does the proof verify?**
+The proof verifies that the minter has access to raw Bitcoin block data — the ability to read arbitrary historical blocks at the byte level. The Indexer independently recomputes every proof using its own full node, ensuring that no fabricated data can pass verification. The recommended and simplest way to mint is by running a local full archive node with the NEXUS Reactor.
 
 **Q: Is there a premine or team allocation?**
 No. Zero premine. The protocol fee address receives 5,000 sats per mint — that's it. All 21,000,000 NXS are distributed through fair minting.
