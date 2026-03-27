@@ -583,7 +583,7 @@ fn menu_mainnet_mint() {
             utxo_mgr.cleanup_spent_changes(&live_keys);
 
             // 预计算单次铸造成本
-            let estimated_witness_len: u64 = 280;
+            let estimated_witness_len: u64 = 850;
             let reveal_vsize: u64 = 300 + (estimated_witness_len / 4);
             let reveal_fee = (reveal_vsize as f64 * fee_rate_f).ceil() as u64;
             let commit_output_value = TOKEN_OUTPUT_SATS + MINT_FEE_SATS + reveal_fee;
@@ -859,13 +859,20 @@ fn execute_mint(
     let interlock = transaction::build_interlock(&two_round, &pubkey_hex).map_err(|e| format!("Interlock failed: {}", e))?;
     println!("    Interlock: ✅");
 
-    let inscription_script = ScriptBuilder::new()
-        .push_x_only_key(&x_only_pubkey).push_opcode(opcodes::all::OP_CHECKSIG)
-        .push_opcode(opcodes::OP_FALSE).push_opcode(opcodes::all::OP_IF)
-        .push_slice(b"nexus").push_slice([0x01]).push_slice(b"application/nexus-mint")
-        .push_opcode(opcodes::all::OP_PUSHBYTES_0)
-        .push_slice(PushBytesBuf::try_from(interlock.witness_json.as_bytes().to_vec()).map_err(|e| format!("payload: {}", e))?)
-        .push_opcode(opcodes::all::OP_ENDIF).into_script();
+    let inscription_script = {
+        let json_bytes = interlock.witness_json.as_bytes();
+        let mut builder = ScriptBuilder::new()
+            .push_x_only_key(&x_only_pubkey).push_opcode(opcodes::all::OP_CHECKSIG)
+            .push_opcode(opcodes::OP_FALSE).push_opcode(opcodes::all::OP_IF)
+            .push_slice(b"nexus").push_slice([0x01]).push_slice(b"application/nexus-mint")
+            .push_opcode(opcodes::all::OP_PUSHBYTES_0);
+        for chunk in json_bytes.chunks(520) {
+            builder = builder.push_slice(
+                PushBytesBuf::try_from(chunk.to_vec()).map_err(|e| format!("payload chunk: {}", e))?
+            );
+        }
+        builder.push_opcode(opcodes::all::OP_ENDIF).into_script()
+    };
     let taproot_builder = TaprootBuilder::new().add_leaf(0, inscription_script.clone()).map_err(|e| format!("taproot leaf: {:?}", e))?;
     let spend_info = taproot_builder.finalize(&secp, internal_key).map_err(|_| "taproot finalize failed")?;
     let commit_address = Address::p2tr_tweaked(spend_info.output_key(), network);
@@ -1004,7 +1011,7 @@ fn execute_batch_mint(
     utxo_mgr.cleanup_spent_changes(&live_keys);
 
     // 预计算固定值
-    let estimated_witness_len: u64 = 280;
+    let estimated_witness_len: u64 = 850;
     let reveal_vsize: u64 = 300 + (estimated_witness_len / 4);
     let reveal_fee = (reveal_vsize as f64 * fee_rate).ceil() as u64;
     let commit_output_value = TOKEN_OUTPUT_SATS + MINT_FEE_SATS + reveal_fee;
