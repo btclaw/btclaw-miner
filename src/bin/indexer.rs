@@ -38,6 +38,10 @@ use nexus_reactor::constants::*;
 use nexus_reactor::indexer::*;
 use nexus_reactor::transaction::*;
 use nexus_reactor::node_detect;
+use nexus_reactor::proof::{verify_proof, read_raw_block_via_rpc};
+
+/// v3.3: 此高度起强制要求完整全节点证明，之前的 mint 跳过验证
+const PROOF_REQUIRED_FROM: u32 = 941950;
 
 // ═══════════════════════════════════════════
 //  Transfer 记录
@@ -249,6 +253,62 @@ fn get_raw_tx(client: &reqwest::blocking::Client, url: &str, user: &str, pass: &
 // ═══════════════════════════════════════════
 //  交易解析 — MINT
 // ═══════════════════════════════════════════
+fn extract_inscription_body(script_hex: &str) -> Option<String> {
+    let bytes: Vec<u8> = (0..script_hex.len() / 2)
+        .filter_map(|i| u8::from_str_radix(&script_hex[i * 2..i * 2 + 2], 16).ok())
+        .collect();
+
+    // 找 OP_IF (0x63)
+    let if_idx = bytes.iter().position(|&b| b == 0x63)?;
+    let mut pos = if_idx + 1;
+    let mut push_count = 0u32;
+    let mut in_body = false;
+    let mut body = Vec::new();
+
+    while pos < bytes.len() {
+        let b = bytes[pos];
+        if b == 0x68 { break; } // OP_ENDIF
+
+        // OP_0 after 3+ pushes = body separator
+        if b == 0x00 && push_count >= 3 && !in_body {
+            in_body = true;
+            pos += 1;
+            continue;
+        }
+
+        // 解析 push 操作
+        let (data_start, data_len) = if b >= 0x01 && b <= 0x4b {
+            // OP_PUSHBYTES_1..75: 直接 push
+            (pos + 1, b as usize)
+        } else if b == 0x4c && pos + 1 < bytes.len() {
+            // OP_PUSHDATA1: 1字节长度
+            (pos + 2, bytes[pos + 1] as usize)
+        } else if b == 0x4d && pos + 2 < bytes.len() {
+            // OP_PUSHDATA2: 2字节 LE 长度
+            let len = u16::from_le_bytes([bytes[pos + 1], bytes[pos + 2]]) as usize;
+            (pos + 3, len)
+        } else if b == 0x4e && pos + 4 < bytes.len() {
+            // OP_PUSHDATA4: 4字节 LE 长度
+            let len = u32::from_le_bytes([bytes[pos + 1], bytes[pos + 2], bytes[pos + 3], bytes[pos + 4]]) as usize;
+            (pos + 5, len)
+        } else {
+            pos += 1;
+            continue;
+        };
+
+        if data_start + data_len > bytes.len() { break; }
+
+        if in_body {
+            body.extend_from_slice(&bytes[data_start..data_start + data_len]);
+        }
+
+        pos = data_start + data_len;
+        push_count += 1;
+    }
+
+    if body.is_empty() { return None; }
+    String::from_utf8(body).ok()
+}
 
 fn parse_candidate(tx: &serde_json::Value, block_height: u32, tx_index: u32) -> Option<CandidateTx> {
     let txid = tx["txid"].as_str()?.to_string();
@@ -299,29 +359,17 @@ fn parse_candidate(tx: &serde_json::Value, block_height: u32, tx_index: u32) -> 
         if let Some(witness) = vin0["txinwitness"].as_array() {
             if witness.len() >= 2 {
                 let script_hex = witness[1].as_str().unwrap_or("");
+                // 提取公钥（不变）
                 if script_hex.len() >= 66 {
                     let pk_start = if &script_hex[..2] == "20" { 2 } else { 0 };
                     if script_hex.len() >= pk_start + 64 {
                         tx_pubkey = Some(script_hex[pk_start..pk_start + 64].to_string());
                     }
                 }
-                if let Some(idx) = script_hex.find("7b22") {
-                    let json_hex = &script_hex[idx..];
-                    let mut depth: i32 = 0;
-                    let mut end = 0;
-                    let bytes: Vec<u8> = (0..json_hex.len() / 2)
-                        .filter_map(|i| u8::from_str_radix(&json_hex[i * 2..i * 2 + 2], 16).ok())
-                        .collect();
-                    for (i, &b) in bytes.iter().enumerate() {
-                        if b == b'{' { depth += 1; }
-                        if b == b'}' { depth -= 1; if depth == 0 { end = i + 1; break; } }
-                    }
-                    if end > 0 {
-                        if let Ok(json_str) = String::from_utf8(bytes[..end].to_vec()) {
-                            if json_str.contains("\"nexus\"") && json_str.contains("\"mint\"") {
-                                witness_json = Some(json_str);
-                            }
-                        }
+                // v3.3: 提取铭文 body（支持多 chunk，兼容旧单 chunk）
+                if let Some(body_str) = extract_inscription_body(script_hex) {
+                    if body_str.contains("\"nexus\"") && body_str.contains("\"mint\"") {
+                        witness_json = Some(body_str);
                     }
                 }
             }
@@ -575,8 +623,11 @@ fn scan_blocks(state: &AppState) {
         }
         if !mint_candidates.is_empty() {
             let mut indexer = state.indexer.lock().unwrap();
+            let get_raw = |h: u32| -> Result<Vec<u8>, String> {
+                read_raw_block_via_rpc(&state.rpc_url, &state.rpc_user, &state.rpc_pass, h)
+            };
             for candidate in mint_candidates {
-                match light_validate(&indexer, &candidate) {
+                match light_validate(&indexer, &candidate, &get_raw) {
                     Ok(record) => {
                         println!("[scan] ✅ MINT #{} at block {} tx {}", record.seq, height, &record.txid[..12]);
                         indexer.confirm(record);
@@ -643,7 +694,11 @@ fn scan_blocks(state: &AppState) {
     }
 }
 
-fn light_validate(indexer: &Indexer, tx: &CandidateTx) -> Result<MintRecord, String> {
+fn light_validate(
+    indexer: &Indexer,
+    tx: &CandidateTx,
+    get_raw_block: &dyn Fn(u32) -> Result<Vec<u8>, String>,
+) -> Result<MintRecord, String> {
     if indexer.minted >= MAX_SUPPLY { return Err("supply exhausted".into()); }
 
     let witness_json = tx.witness_json.as_ref().ok_or("no witness")?;
@@ -664,6 +719,31 @@ fn light_validate(indexer: &Indexer, tx: &CandidateTx) -> Result<MintRecord, Str
     verify_interlock(witness_json, opr_bytes)?;
     if !tx.fee_output_valid { return Err("fee invalid".into()); }
     if indexer.used_proofs.contains_key(&wit.fnp) { return Err("proof already used".into()); }
+
+    // ═══ v3.3 规则6: 全节点证明独立验证（941950+ 强制）═══
+    if tx.block_height >= PROOF_REQUIRED_FROM {
+        let proof = wit.proof.as_ref()
+            .ok_or(format!("missing proof data (required from block {})", PROOF_REQUIRED_FROM))?;
+        // 6a. 预检查（轻量，防 DoS）
+        if proof.round1_heights.len() != CHALLENGES_PER_ROUND
+            || proof.round2_heights.len() != CHALLENGES_PER_ROUND {
+            return Err("proof heights count mismatch".into());
+        }
+        if proof.round2_ts.saturating_sub(proof.round1_ts) > MAX_ROUND_GAP_SECS {
+            return Err(format!("proof time gap {}s > {}s limit",
+                proof.round2_ts - proof.round1_ts, MAX_ROUND_GAP_SECS));
+        }
+        if proof.combined.len() != 64 || proof.pubkey.len() != 66 {
+            return Err("proof field length invalid".into());
+        }
+        // 6b. fnp 必须等于 proof.combined
+        if proof.combined != wit.fnp {
+            return Err(format!("proof.combined != fnp: {} vs {}", &proof.combined[..16], &wit.fnp[..16]));
+        }
+        // 6c. 完整密码学验证 — indexer 用自己的全节点重新计算两轮哈希
+        verify_proof(proof, get_raw_block)?;
+        println!("    [proof] ✅ Full node proof verified for block {}", proof.block_height);
+    }
 
     Ok(MintRecord {
         seq: indexer.next_seq, txid: tx.txid.clone(), address: tx.minter_address.clone(),
