@@ -313,7 +313,7 @@ cargo build --release
 - **GitHub**：[github.com/btcnexus/nexus-protocol](https://github.com/btcnexus/nexus-protocol)
 - **API**：[api.bitcoinexus.xyz/api/status](https://api.bitcoinexus.xyz/api/status)
 - **协议规范**：[`docs/PROTOCOL.md`](docs/PROTOCOL.md)
-- **协议文档**：[bitcoinexus.xyz/protocol.html](https://bitcoinexus.xyz/protocol.html)
+- **协议文档**：[bitcoinexus.xyz/protocol](https://bitcoinexus.xyz/protocol)
 
 ---
 
