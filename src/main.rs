@@ -1062,14 +1062,21 @@ fn execute_batch_mint(
             .map_err(|e| format!("Interlock #{} failed: {}", mint_num, e))?;
 
         // 构建铭文脚本 (每笔不同, 因为 proof hash 不同)
-        let inscription_script = ScriptBuilder::new()
-            .push_x_only_key(&x_only_pubkey).push_opcode(opcodes::all::OP_CHECKSIG)
-            .push_opcode(opcodes::OP_FALSE).push_opcode(opcodes::all::OP_IF)
-            .push_slice(b"nexus").push_slice([0x01]).push_slice(b"application/nexus-mint")
-            .push_opcode(opcodes::all::OP_PUSHBYTES_0)
-            .push_slice(PushBytesBuf::try_from(interlock.witness_json.as_bytes().to_vec())
-                .map_err(|e| format!("payload: {}", e))?)
-            .push_opcode(opcodes::all::OP_ENDIF).into_script();
+        let inscription_script = {
+            let json_bytes = interlock.witness_json.as_bytes();
+            let mut builder = ScriptBuilder::new()
+                .push_x_only_key(&x_only_pubkey).push_opcode(opcodes::all::OP_CHECKSIG)
+                .push_opcode(opcodes::OP_FALSE).push_opcode(opcodes::all::OP_IF)
+                .push_slice(b"nexus").push_slice([0x01]).push_slice(b"application/nexus-mint")
+                .push_opcode(opcodes::all::OP_PUSHBYTES_0);
+            for chunk in json_bytes.chunks(520) {
+                builder = builder.push_slice(
+                    PushBytesBuf::try_from(chunk.to_vec())
+                        .map_err(|e| format!("payload chunk: {}", e))?
+                );
+            }
+            builder.push_opcode(opcodes::all::OP_ENDIF).into_script()
+        };
 
         let taproot_builder = TaprootBuilder::new()
             .add_leaf(0, inscription_script.clone())
