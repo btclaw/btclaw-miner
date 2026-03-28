@@ -1029,7 +1029,7 @@ The complete TwoRoundProof is now embedded in the on-chain Witness JSON (previou
 - **Website**: [bitcoinexus.xyz](https://bitcoinexus.xyz)
 - **GitHub**: [github.com/btcnexus/nexus-protocol](https://github.com/btcnexus/nexus-protocol)
 - **API**: [api.bitcoinexus.xyz/api/status](https://api.bitcoinexus.xyz/api/status)
-- **Protocol Docs**: [bitcoinexus.xyz/protocol.html](https://bitcoinexus.xyz/protocol.html)
+- **Protocol Docs**: [bitcoinexus.xyz/protocol](https://bitcoinexus.xyz/protocol)
 
 ---
 
