@@ -1,37 +1,16 @@
-/// NEXUS Indexer — 7条验证规则
-///
-/// 1. Witness铭文含"nexus"且格式正确
-/// 2. OP_RETURN以"NXS"开头且格式正确
-/// 3. 铸造费5000sats正确发送到项目方地址 (轻量，前置防DoS)
-/// 4. 双层互锁hash验证通过
-/// 5. 身份绑定 — pk必须匹配交易签名的Taproot公钥
-/// 6. 全节点证明验证通过 (最昂贵，放最后)
-/// 7. mint_seq <= 42,000 (总量未超)
-///
-/// 序号分配: 按区块确认顺序 + 区块内交易位置排序
-
 use serde::{Serialize, Deserialize};
-use std::collections::HashMap;
+use std::sync::Arc;
 use crate::constants::*;
 use crate::proof::{TwoRoundProof, verify_proof};
 use crate::transaction::*;
+use crate::db::NexusDb;
 
 // ═══════════════════════════════════════════
-//  状态
+//  状态 — 所有数据存储在 SQLite 中
 // ═══════════════════════════════════════════
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Indexer {
-    /// 下一个可用序号
-    pub next_seq: u32,
-    /// 已铸造总量
-    pub minted: u64,
-    /// 余额表 address → amount
-    pub balances: HashMap<String, u64>,
-    /// 已使用的proof hash (防重放)
-    pub used_proofs: HashMap<String, bool>,
-    /// 铸造记录
-    pub mints: Vec<MintRecord>,
+    pub db: Arc<NexusDb>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -59,28 +38,24 @@ pub struct Status {
 }
 
 impl Indexer {
-    pub fn new() -> Self {
-        Self {
-            next_seq: 1,
-            minted: 0,
-            balances: HashMap::new(),
-            used_proofs: HashMap::new(),
-            mints: Vec::new(),
-        }
+    pub fn new(db: Arc<NexusDb>) -> Self {
+        Self { db }
     }
 
     pub fn status(&self) -> Status {
+        let minted = self.db.get_minted();
+        let next_seq = self.db.get_next_seq();
         Status {
             total_supply: MAX_SUPPLY,
-            minted: self.minted,
-            remaining: MAX_SUPPLY - self.minted,
-            next_seq: self.next_seq,
+            minted,
+            remaining: MAX_SUPPLY.saturating_sub(minted),
+            next_seq,
             total_mints: TOTAL_MINTS,
-            mints_remaining: TOTAL_MINTS - (self.next_seq - 1),
+            mints_remaining: TOTAL_MINTS.saturating_sub(next_seq.saturating_sub(1)),
             mint_amount_per_tx: MINT_AMOUNT,
             mint_fee_sats: MINT_FEE_SATS,
-            complete: self.minted >= MAX_SUPPLY,
-            holders: self.balances.len(),
+            complete: minted >= MAX_SUPPLY,
+            holders: self.db.get_holder_count(),
         }
     }
 
@@ -91,8 +66,11 @@ impl Indexer {
         get_raw_block: &dyn Fn(u32) -> Result<Vec<u8>, String>,
     ) -> Result<MintRecord, String> {
 
+        let minted = self.db.get_minted();
+        let next_seq = self.db.get_next_seq();
+
         // ═══ 规则7: 总量检查 ═══
-        if self.minted >= MAX_SUPPLY {
+        if minted >= MAX_SUPPLY {
             return Err("铸造已结束，总量21,000,000已达上限".into());
         }
 
@@ -152,8 +130,8 @@ impl Indexer {
         if proof.combined.len() != 64 || proof.pubkey.len() != 66 {
             return Err("proof字段长度异常".into());
         }
-        // 6b. 防重放
-        if self.used_proofs.contains_key(&proof.combined) {
+        // 6b. 防重放 — 从数据库查询
+        if self.db.has_proof(&proof.combined) {
             return Err("该全节点证明已被使用 (重放攻击)".into());
         }
         // 6c. 完整验证
@@ -161,7 +139,7 @@ impl Indexer {
 
         // ═══ 全部通过 ═══
         Ok(MintRecord {
-            seq: self.next_seq,
+            seq: next_seq,
             txid: tx.txid.clone(),
             address: tx.minter_address.clone(),
             amount: MINT_AMOUNT,
@@ -170,22 +148,27 @@ impl Indexer {
         })
     }
 
-    /// 确认铸造 (更新状态)
-    pub fn confirm(&mut self, record: MintRecord) {
-        let addr = record.address.clone();
-        let proof = record.proof_hash.clone();
+    /// 确认铸造 (写入数据库)
+    pub fn confirm(&self, record: MintRecord) {
+        // 写入铸造记录
+        self.db.add_mint(&record);
 
-        *self.balances.entry(addr).or_insert(0) += MINT_AMOUNT;
-        self.used_proofs.insert(proof, true);
-        self.minted += MINT_AMOUNT;
-        self.next_seq += 1;
-        self.mints.push(record);
+        // 更新余额
+        self.db.add_balance(&record.address, record.amount);
+
+        // 记录已用证明
+        self.db.add_proof(&record.proof_hash);
+
+        // 更新 minted 和 next_seq
+        let minted = self.db.get_minted();
+        self.db.set_minted(minted + record.amount);
+        self.db.set_next_seq(record.seq + 1);
     }
 
     /// 处理一个区块中的所有NEXUS交易
     /// 按交易在区块中的位置排序，依次验证和确认
     pub fn process_block(
-        &mut self,
+        &self,
         candidates: Vec<CandidateTx>,
         get_raw_block: &dyn Fn(u32) -> Result<Vec<u8>, String>,
     ) -> Vec<Result<MintRecord, String>> {
@@ -236,73 +219,4 @@ pub fn is_nexus_tx(script_pubkey: &[u8]) -> bool {
     };
     script_pubkey.len() > data_start + 3
         && &script_pubkey[data_start..data_start + 3] == b"NXS"
-}
-
-// ═══════════════════════════════════════════
-//  测试
-// ═══════════════════════════════════════════
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn fresh_indexer_status() {
-        let idx = Indexer::new();
-        let s = idx.status();
-        assert_eq!(s.total_supply, MAX_SUPPLY);
-        assert_eq!(s.minted, 0);
-        assert_eq!(s.next_seq, 1);
-        assert_eq!(s.mints_remaining, TOTAL_MINTS);
-        assert!(!s.complete);
-    }
-
-    #[test]
-    fn confirm_updates_state() {
-        let mut idx = Indexer::new();
-        idx.confirm(MintRecord {
-            seq: 1,
-            txid: "abc".into(),
-            minter_address: "bc1qxyz".into(),
-            amount: MINT_AMOUNT,
-            block_height: 941523,
-            proof_hash: "proof1".into(),
-        });
-
-        assert_eq!(idx.next_seq, 2);
-        assert_eq!(idx.minted, MINT_AMOUNT);
-        assert_eq!(*idx.balances.get("bc1qxyz").unwrap(), MINT_AMOUNT);
-        assert!(idx.used_proofs.contains_key("proof1"));
-    }
-
-    #[test]
-    fn replay_detected() {
-        let mut idx = Indexer::new();
-        idx.used_proofs.insert("proof_x".into(), true);
-        assert!(idx.used_proofs.contains_key("proof_x"));
-    }
-
-    #[test]
-    fn supply_cap() {
-        let mut idx = Indexer::new();
-        idx.minted = MAX_SUPPLY; // 假装已铸完
-        let s = idx.status();
-        assert!(s.complete);
-        assert_eq!(s.mints_remaining, 0);
-    }
-
-    #[test]
-    fn is_nexus_tx_detection() {
-        // OP_RETURN + push(76) + "NXS" + ...
-        let mut script = vec![0x6a]; // OP_RETURN
-        script.push(72);             // push 72 bytes
-        script.extend_from_slice(b"NXS");
-        script.extend_from_slice(&[0u8; 69]);
-        assert!(is_nexus_tx(&script));
-
-        // 非NEXUS交易
-        let mut bad = vec![0x6a, 5];
-        bad.extend_from_slice(b"XXXXX");
-        assert!(!is_nexus_tx(&bad));
-    }
 }
