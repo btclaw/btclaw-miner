@@ -318,7 +318,33 @@ fn start_mainnet_sync() {
     std::fs::create_dir_all(&datadir).ok();
     let mem_gb = get_system_memory_gb();
     let dbcache = ((mem_gb as u64).saturating_sub(4) * 1024).max(2048).min(32000);
-    let (rpc_user, rpc_pass) = get_rpc_config();
+    // 首次启动：让用户设置 RPC 账户密码
+    let mut config_for_rpc = node_detect::NexusConfig::load();
+    if config_for_rpc.rpc_pass == "nexustest123" {
+        println!("  🔐 Set RPC credentials / 设置RPC账户密码");
+        println!("     (Used for Bitcoin Core authentication / 用于全节点认证)");
+        println!("");
+
+        print!("     RPC Username / 账户 (default: nexus): ");
+        io::stdout().flush().unwrap();
+        let input_user = read_line().trim().to_string();
+        let new_user = if input_user.is_empty() { "nexus".to_string() } else { input_user };
+
+        print!("     RPC Password / 密码 (required / 必填): ");
+        io::stdout().flush().unwrap();
+        let input_pass = read_line().trim().to_string();
+        if input_pass.is_empty() {
+            println!("  ❌ Password cannot be empty / 密码不能为空");
+            return;
+        }
+
+        config_for_rpc.rpc_user = new_user;
+        config_for_rpc.rpc_pass = input_pass;
+        config_for_rpc.save();
+        println!("  ✅ RPC credentials saved / 账户密码已保存");
+        println!("");
+    }
+    let (rpc_user, rpc_pass) = (config_for_rpc.rpc_user.clone(), config_for_rpc.rpc_pass.clone());
     let conf = format!(
 "server=1\ntxindex=1\nrpcuser={}\nrpcpassword={}\nfallbackfee=0.00001\n\n# Auto-configured: {}GB RAM detected\ndbcache={}\npar=0\nmaxconnections=80\nblocksonly=1\nassumevalid=0000000000000000000220e01aac81f0a001c38c8a51e54688a9ded7b1db93ed\n\n[main]\nrpcport=8332\nrpcallowip=127.0.0.1\nrpcbind=127.0.0.1\n", rpc_user, rpc_pass, mem_gb, dbcache);
     std::fs::write(format!("{}/bitcoin.conf", datadir), &conf).ok();
