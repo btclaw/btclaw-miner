@@ -64,7 +64,7 @@ pub fn detect_node(config: &NexusConfig) -> NodeDetection {
     // 1. 用户配置的路径 — 先试 RPC（节点可能在跑但还没有 blk 文件），再检查文件
     if let Some(ref dir) = config.bitcoin_datadir {
         // 先尝试 RPC 连接（覆盖"刚启动还没有blk文件"的场景）
-        let rpc_ok = try_rpc(config);
+        let rpc_ok = try_rpc(config, Some(dir));
         if rpc_ok || has_blocks(dir) {
             r.found = true;
             r.datadir = dir.clone();
@@ -164,14 +164,17 @@ fn common_paths() -> Vec<String> {
 }
 
 /// 尝试通过 RPC 连接节点（不依赖文件系统）
-fn try_rpc(config: &NexusConfig) -> bool {
-    let o = Command::new("bitcoin-cli")
-        .args([
-            &format!("-rpcuser={}", config.rpc_user),
-            &format!("-rpcpassword={}", config.rpc_pass),
-            "getblockchaininfo",
-        ]).output();
-    match o {
+fn try_rpc(config: &NexusConfig, datadir: Option<&str>) -> bool {
+    let mut args: Vec<String> = Vec::new();
+    if let Some(dir) = datadir {
+        if !dir.is_empty() {
+            args.push(format!("-datadir={}", dir));
+        }
+    }
+    args.push(format!("-rpcuser={}", config.rpc_user));
+    args.push(format!("-rpcpassword={}", config.rpc_pass));
+    args.push("getblockchaininfo".into());
+    match Command::new("bitcoin-cli").args(&args).output() {
         Ok(output) => output.status.success(),
         Err(_) => false,
     }
@@ -194,11 +197,15 @@ fn detect_cli(config: &NexusConfig) -> Option<String> {
 
 fn fill(r: &mut NodeDetection, config: &NexusConfig) {
     r.size_gb = dir_size_gb(&format!("{}/blocks", r.datadir));
-    let args = vec![
-        format!("-rpcuser={}", config.rpc_user),
-        format!("-rpcpassword={}", config.rpc_pass),
-        "getblockchaininfo".into(),
-    ];
+
+    let mut args: Vec<String> = Vec::new();
+    if !r.datadir.is_empty() {
+        args.push(format!("-datadir={}", r.datadir));
+    }
+    args.push(format!("-rpcuser={}", config.rpc_user));
+    args.push(format!("-rpcpassword={}", config.rpc_pass));
+    args.push("getblockchaininfo".into());
+
     if let Ok(o) = Command::new("bitcoin-cli").args(&args).output() {
         if o.status.success() {
             let s = String::from_utf8_lossy(&o.stdout);
