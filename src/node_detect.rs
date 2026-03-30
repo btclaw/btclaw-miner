@@ -61,9 +61,11 @@ pub fn detect_node(config: &NexusConfig) -> NodeDetection {
         progress: 0.0, ibd: true, size_gb: 0.0,
     };
 
-    // 1. 用户配置的路径
+    // 1. 用户配置的路径 — 先试 RPC（节点可能在跑但还没有 blk 文件），再检查文件
     if let Some(ref dir) = config.bitcoin_datadir {
-        if has_blocks(dir) {
+        // 先尝试 RPC 连接（覆盖"刚启动还没有blk文件"的场景）
+        let rpc_ok = try_rpc(config);
+        if rpc_ok || has_blocks(dir) {
             r.found = true;
             r.datadir = dir.clone();
             r.source = "User config / 用户配置".into();
@@ -72,19 +74,17 @@ pub fn detect_node(config: &NexusConfig) -> NodeDetection {
         }
     }
 
-    // 2. 运行中的bitcoind进程
+    // 2. 运行中的bitcoind进程 — 进程在跑就算 found，不要求 has_blocks
     if let Some(dir) = detect_process() {
-        if has_blocks(&dir) {
-            r.found = true;
-            r.datadir = dir;
-            r.source = "Running process / 运行中进程".into();
-            r.running = true;
-            fill(&mut r, config);
-            return r;
-        }
+        r.found = true;
+        r.datadir = dir;
+        r.source = "Running process / 运行中进程".into();
+        r.running = true;
+        fill(&mut r, config);
+        return r;
     }
 
-    // 3. 常见路径
+    // 3. 常见路径（需要有 blk 文件才算）
     for p in common_paths() {
         if has_blocks(&p) {
             r.found = true;
@@ -95,7 +95,7 @@ pub fn detect_node(config: &NexusConfig) -> NodeDetection {
         }
     }
 
-    // 4. bitcoin-cli
+    // 4. bitcoin-cli（最后兜底，直接试 RPC 连接）
     if let Some(dir) = detect_cli(config) {
         r.found = true;
         r.datadir = dir;
@@ -161,6 +161,20 @@ fn common_paths() -> Vec<String> {
         }
     }
     v
+}
+
+/// 尝试通过 RPC 连接节点（不依赖文件系统）
+fn try_rpc(config: &NexusConfig) -> bool {
+    let o = Command::new("bitcoin-cli")
+        .args([
+            &format!("-rpcuser={}", config.rpc_user),
+            &format!("-rpcpassword={}", config.rpc_pass),
+            "getblockchaininfo",
+        ]).output();
+    match o {
+        Ok(output) => output.status.success(),
+        Err(_) => false,
+    }
 }
 
 fn detect_cli(config: &NexusConfig) -> Option<String> {
