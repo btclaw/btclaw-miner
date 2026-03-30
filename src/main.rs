@@ -135,27 +135,133 @@ fn install_bitcoin_core() {
             return;
         }
     }
-    println!("  ⏳ 开始安装 Bitcoin Core 30.2...");
-    println!("  (这需要下载约74MB, 请稍候)");
+
+    // 检查是否已经解压但没有复制到 PATH
+    if let Ok(o) = Command::new("bash").arg("-c")
+        .arg("find /root /home /opt /tmp -maxdepth 5 -name 'bitcoind' -type f 2>/dev/null | head -1")
+        .output() {
+        let found = String::from_utf8_lossy(&o.stdout).trim().to_string();
+        if !found.is_empty() {
+            // 推断 bin 目录
+            let bin_dir = std::path::Path::new(&found).parent().unwrap_or(std::path::Path::new("."));
+            println!("  Found existing bitcoind at: {}", found);
+            println!("  Copying to /usr/local/bin/...");
+            let cp_result = Command::new("bash").arg("-c")
+                .arg(format!("sudo cp {}/* /usr/local/bin/ 2>&1", bin_dir.display()))
+                .output();
+            if let Ok(o) = cp_result {
+                if o.status.success() {
+                    // 验证
+                    if let Ok(v) = Command::new("bitcoind").arg("--version").output() {
+                        if v.status.success() {
+                            let ver = String::from_utf8_lossy(&v.stdout);
+                            println!("  ✅ Bitcoin Core installed from existing files!");
+                            println!("     {}", ver.lines().next().unwrap_or(""));
+                            return;
+                        }
+                    }
+                }
+            }
+            println!("  ⚠️  Copy failed, will download fresh / 复制失败，将重新下载");
+        }
+    }
+
+    println!("  ⏳ Installing Bitcoin Core 30.2...");
+    println!("  (Download ~74MB, please wait / 下载约74MB，请等待)");
     println!("");
+
     let script = r#"
+        set -e
         cd /tmp
+
         ARCH=$(uname -m)
-        if [ "$ARCH" = "x86_64" ]; then BA="x86_64-linux-gnu"; 
-        elif [ "$ARCH" = "aarch64" ]; then BA="aarch64-linux-gnu";
-        else echo "不支持的架构"; exit 1; fi
-        wget -q "https://bitcoincore.org/bin/bitcoin-core-30.2/bitcoin-30.2-${BA}.tar.gz"
-        tar xzf "bitcoin-30.2-${BA}.tar.gz"
-        sudo install -m 0755 bitcoin-30.2/bin/* /usr/local/bin/
-        rm -rf bitcoin-30.2 "bitcoin-30.2-${BA}.tar.gz"
+        if [ "$ARCH" = "x86_64" ]; then
+            BA="x86_64-linux-gnu"
+        elif [ "$ARCH" = "aarch64" ]; then
+            BA="aarch64-linux-gnu"
+        else
+            echo "FAIL: Unsupported architecture: $ARCH"
+            exit 1
+        fi
+
+        FILE="bitcoin-30.2-${BA}.tar.gz"
+        URL_OFFICIAL="https://bitcoincore.org/bin/bitcoin-core-30.2/${FILE}"
+        URL_MIRROR1="https://mirrors.tuna.tsinghua.edu.cn/bitcoin/bitcoin-core-30.2/${FILE}"
+        URL_MIRROR2="https://github.com/bitcoin/bitcoin/releases/download/v30.2/${FILE}"
+
+        # 先测试官方源连通性（3秒超时）
+        echo "  Testing download sources / 测试下载源..."
+        if curl -sI --connect-timeout 3 "$URL_OFFICIAL" >/dev/null 2>&1; then
+            URL="$URL_OFFICIAL"
+            echo "  Source: bitcoincore.org (official)"
+        elif curl -sI --connect-timeout 3 "$URL_MIRROR1" >/dev/null 2>&1; then
+            URL="$URL_MIRROR1"
+            echo "  Source: tsinghua mirror (清华镜像)"
+        elif curl -sI --connect-timeout 3 "$URL_MIRROR2" >/dev/null 2>&1; then
+            URL="$URL_MIRROR2"
+            echo "  Source: github releases"
+        else
+            URL="$URL_OFFICIAL"
+            echo "  Source: bitcoincore.org (fallback)"
+        fi
+
+        echo "  URL: $URL"
+        echo "  Downloading... / 正在下载..."
+        echo ""
+
+        # 优先用 wget 显示进度条，fallback 到 curl
+        if command -v wget >/dev/null 2>&1; then
+            wget --progress=bar:force --timeout=120 -O "/tmp/${FILE}" "$URL" 2>&1
+        else
+            curl -L --progress-bar --connect-timeout 30 --max-time 600 -o "/tmp/${FILE}" "$URL"
+        fi
+
+        if [ ! -f "/tmp/${FILE}" ]; then
+            echo "FAIL: Download failed"
+            exit 1
+        fi
+
+        echo ""
+        echo "  Extracting... / 正在解压..."
+        tar xzf "/tmp/${FILE}" -C /tmp/
+
+        echo "  Installing to /usr/local/bin/..."
+        sudo install -m 0755 /tmp/bitcoin-30.2/bin/* /usr/local/bin/
+
+        # 验证
+        if ! bitcoind --version >/dev/null 2>&1; then
+            echo "FAIL: Install verification failed"
+            exit 1
+        fi
+
+        rm -rf /tmp/bitcoin-30.2 "/tmp/${FILE}"
         echo "DONE"
     "#;
-    let output = Command::new("bash").arg("-c").arg(script).output();
-    match output {
-        Ok(o) if String::from_utf8_lossy(&o.stdout).contains("DONE") => {
+
+    // 用 inherit 让下载进度实时显示在终端
+    let status = Command::new("bash")
+        .arg("-c")
+        .arg(script)
+        .stdout(std::process::Stdio::inherit())
+        .stderr(std::process::Stdio::inherit())
+        .status();
+
+    match status {
+        Ok(s) if s.success() => {
+            println!("");
             println!("  ✅ Bitcoin Core 安装完成!");
         }
-        _ => println!("  ❌ 安装失败, 请手动安装: https://bitcoincore.org/en/download/"),
+        _ => {
+            println!("");
+            println!("  ❌ 安装失败 / Installation failed");
+            println!("     Manual install / 手动安装:");
+            println!("     https://bitcoincore.org/en/download/");
+            println!("");
+            println!("     Or try / 或者尝试:");
+            println!("     wget https://bitcoincore.org/bin/bitcoin-core-30.2/bitcoin-30.2-x86_64-linux-gnu.tar.gz");
+            println!("     tar xzf bitcoin-30.2-x86_64-linux-gnu.tar.gz");
+            println!("     sudo cp bitcoin-30.2/bin/* /usr/local/bin/");
+        }
     }
 }
 
@@ -166,6 +272,32 @@ fn start_mainnet_sync() {
     println!("    - Time / 时间: 8-72h (depends on hardware)");
     println!("    - RAM / 内存: 4GB+ (more = faster)");
     println!("");
+
+    // 启动前先检查 bitcoind 是否在 PATH 里
+    match Command::new("bitcoind").arg("--version").output() {
+        Ok(o) if o.status.success() => {},
+        _ => {
+            println!("  ❌ bitcoind not found in PATH / 未找到 bitcoind 命令");
+            println!("     Please run [1] → [1] Install first / 请先用 [1]→[1] 安装");
+            println!("");
+            // 搜索常见位置提示用户
+            if let Ok(o) = Command::new("bash").arg("-c")
+                .arg("find /root /home /opt /tmp -maxdepth 4 -name 'bitcoind' -type f 2>/dev/null | head -5")
+                .output() {
+                let found = String::from_utf8_lossy(&o.stdout);
+                if !found.trim().is_empty() {
+                    println!("     Found bitcoind at / 在以下位置找到:");
+                    for line in found.trim().lines() {
+                        println!("       {}", line);
+                    }
+                    println!("");
+                    println!("     Fix: sudo cp <path-to-dir>/bin/* /usr/local/bin/");
+                }
+            }
+            return;
+        }
+    }
+
     let config = node_detect::NexusConfig::load();
     let det = node_detect::detect_node(&config);
     if det.found && det.running {
@@ -190,15 +322,70 @@ fn start_mainnet_sync() {
     let conf = format!(
 "server=1\ntxindex=1\nrpcuser={}\nrpcpassword={}\nfallbackfee=0.00001\n\n# Auto-configured: {}GB RAM detected\ndbcache={}\npar=0\nmaxconnections=80\nblocksonly=1\nassumevalid=0000000000000000000220e01aac81f0a001c38c8a51e54688a9ded7b1db93ed\n\n[main]\nrpcport=8332\nrpcallowip=127.0.0.1\nrpcbind=127.0.0.1\n", rpc_user, rpc_pass, mem_gb, dbcache);
     std::fs::write(format!("{}/bitcoin.conf", datadir), &conf).ok();
-    let _ = Command::new("bitcoind").arg(format!("-datadir={}", datadir)).arg("-daemon").spawn();
+
+    // 用 output() 代替 spawn()，等待进程返回并检查结果
+    let launch = Command::new("bitcoind")
+        .arg(format!("-datadir={}", datadir))
+        .arg("-daemon")
+        .output();
+
+    match launch {
+        Ok(o) => {
+            let stderr = String::from_utf8_lossy(&o.stderr);
+            let stdout = String::from_utf8_lossy(&o.stdout);
+            // bitcoind -daemon 成功时会输出 "Bitcoin Core starting" 到 stdout
+            // 如果失败且不是"already running"，报错退出
+            if !o.status.success()
+                && !stderr.contains("already running")
+                && !stdout.contains("starting")
+            {
+                println!("  ❌ Failed to start bitcoind / 启动失败");
+                if !stderr.trim().is_empty() {
+                    println!("     {}", stderr.trim());
+                }
+                return;
+            }
+        }
+        Err(e) => {
+            println!("  ❌ Failed to start bitcoind / 启动失败: {}", e);
+            return;
+        }
+    }
+
+    // 保存路径到配置（无论 RPC 是否立即就绪都要保存）
     let mut config = node_detect::NexusConfig::load();
     config.bitcoin_datadir = Some(datadir.clone());
     config.save();
+
+    // 等待 RPC 就绪再确认
     println!("");
-    println!("  ✅ Node started! / 节点已启动!");
-    println!("     Datadir: {}", datadir);
-    println!("     dbcache: {} MB ({}GB RAM detected)", dbcache, mem_gb);
-    println!("     Use [2] to check progress / 用[2]查看同步进度");
+    print!("  Waiting for RPC... / 等待RPC就绪... ");
+    io::stdout().flush().unwrap();
+    let mut rpc_ready = false;
+    for _ in 0..6 {
+        std::thread::sleep(std::time::Duration::from_secs(2));
+        let check = btc_cli_output(&["getblockchaininfo"], false);
+        if !check.is_empty() && !check.contains("error") {
+            rpc_ready = true;
+            break;
+        }
+    }
+
+    if rpc_ready {
+        println!("✅");
+        println!("");
+        println!("  ✅ Node started! / 节点已启动!");
+        println!("     Datadir: {}", datadir);
+        println!("     dbcache: {} MB ({}GB RAM detected)", dbcache, mem_gb);
+        println!("     Use [2] to check progress / 用[2]查看同步进度");
+    } else {
+        println!("⏳");
+        println!("");
+        println!("  ⚠️  Node process started but RPC not ready yet / 进程已启动但RPC未就绪");
+        println!("     Datadir: {}", datadir);
+        println!("     dbcache: {} MB ({}GB RAM detected)", dbcache, mem_gb);
+        println!("     Wait 10-30s, then use [2] / 等待10-30秒后用[2]查看进度");
+    }
 }
 
 fn get_system_memory_gb() -> u32 {
