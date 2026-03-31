@@ -26,7 +26,7 @@ pub const TOKEN_OUTPUT_SATS: u64 = 330;
 
 /// FEE地址
 #[cfg(not(feature = "regtest"))]
-pub const FEE_ADDRESS: &str = "bc1p8d6a2pu8hdpk9tq3tt64ys2947e4hgn6j5msgqaycptj08xgvrpqqtd98h";
+pub const FEE_ADDRESS: &str = "bc1px3xlanjssfrj6p796vjew7u70qe26yv4d4lfdj292g8q7hmwt3ns3hrd02";
 
 #[cfg(feature = "regtest")]
 pub const FEE_ADDRESS: &str = "bcrt1pt69vsuspaadg4kd3k8dv48edvq6e2x5td3m4gxjwc43ymd92ve8q7f67e0"; // 运行时动态设置
