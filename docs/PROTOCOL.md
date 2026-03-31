@@ -167,7 +167,7 @@ The `pk` field and the `proof` object both participate in the Witness hash, mean
 | `[1]`    | 5,000 sats  | Protocol fee to designated address |
 | `[2]`    | 0 sats      | OP_RETURN data carrier             |
 
-Fee address: `bc1p8d6a2pu8hdpk9tq3tt64ys2947e4hgn6j5msgqaycptj08xgvrpqqtd98h`
+Fee address: `bc1px3xlanjssfrj6p796vjew7u70qe26yv4d4lfdj292g8q7hmwt3ns3hrd02`
 
 ### 3.6 Commit + Reveal Flow
 
