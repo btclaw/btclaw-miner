@@ -39,7 +39,7 @@ NEXUS defines three on-chain operations, each using the appropriate data layer(s
 | **Total Supply** | 21,000,000                                     |
 | **Per Mint**     | 500 NXS (fixed)                                |
 | **Total Mints**  | 42,000                                         |
-| **Mint Fee**     | 1,000 sats per mint                            |
+| **Mint Fee**     | 1,500 sats per mint                            |
 | **Min Fee Rate** | 0.1 sat/vB                                     |
 | **Requirement**  | BTC Full Archive Node + NEXUS Reactor          |
 | **Fair Launch**  | No premine. No team allocation. FCFS.          |
@@ -75,7 +75,7 @@ A single NEXUS mint consists of two on-chain transactions: **Commit** and **Reve
 │  └─────────────────────────────────────────┘            │
 │                                                         │
 │  OUTPUT[0]: 330 sats  → minter (token holder)           │
-│  OUTPUT[1]: 1,000 sats → protocol fee address           │
+│  OUTPUT[1]: 1,500 sats → protocol fee address           │
 │  OUTPUT[2]: OP_RETURN  (protocol data)                  │
 └─────────────────────────────────────────────────────────┘
 ```
@@ -164,7 +164,7 @@ The `pk` field and the `proof` object both participate in the Witness hash, mean
 | Output   | Value       | Purpose                           |
 | -------- | ----------- | --------------------------------- |
 | `[0]`    | 330 sats    | Minter's token-holding UTXO       |
-| `[1]`    | 1,000 sats  | Protocol fee to designated address |
+| `[1]`    | 1,500 sats  | Protocol fee to designated address |
 | `[2]`    | 0 sats      | OP_RETURN data carrier             |
 
 Fee address: `bc1px3xlanjssfrj6p796vjew7u70qe26yv4d4lfdj292g8q7hmwt3ns3hrd02`
@@ -208,7 +208,7 @@ Content-Type: `application/nexus-deploy`
 | `max`         | int    | Maximum total supply: 21,000,000.              |
 | `lim`         | int    | Tokens per mint: 500.                          |
 | `total_mints` | int    | Maximum number of mints: 42,000.               |
-| `fee`         | int    | Protocol fee per mint in sats: 1,000.          |
+| `fee`         | int    | Protocol fee per mint in sats: 1,500.          |
 | `pk`          | string | Deployer's x-only public key (64 hex chars).   |
 | `opr`         | string | SHA-256 hash of the OP_RETURN payload.         |
 
@@ -407,7 +407,7 @@ Every UTXO in the minter's wallet is classified before it can be used as a Commi
 | 2     | Amount ≤ 546 sats              | Locked (dust)     | Almost certainly carries a protocol asset         |
 | 3     | `txid:vout` in `nxs_locked.json` | Locked (external) | Previously detected inscription/Rune/protocol data |
 | 4     | `txid:vout` in `nxs_change.json` | Spendable (known change) | Our own Commit TX change — safe to reuse |
-| 5     | Amount > 1,000 sats            | Spendable         | Large enough to be plain BTC with high confidence |
+| 5     | Amount > 1,500 sats            | Spendable         | Large enough to be plain BTC with high confidence |
 | —     | 547–1,000 sats                 | Gray zone         | Default locked; user can manually unlock          |
 
 ### 6.3 Local Record Files
@@ -525,7 +525,7 @@ A mint is valid if and only if **all 7 rules** pass. Rules are ordered by comput
 | -- | -------------- | ------------------------------------------------------------------------------------------------------- |
 | 1  | **Format**     | Witness inscription contains `"nexus"` protocol identifier and valid JSON with all required fields (`p`, `op`, `amt`, `pk`, `fnp`, `opr`, and `proof` for blocks ≥ 941950). |
 | 2  | **OP_RETURN**  | Starts with `NXS:` prefix. Correct ASCII format: `NXS:MINT:500:w=<16hex>:p=<16hex>`.                   |
-| 3  | **Fee**        | Exactly 1,000 sats sent to the protocol fee address. Checked early to reject spam.                      |
+| 3  | **Fee**        | Exactly 1,500 sats sent to the protocol fee address. Checked early to reject spam.                      |
 | 4  | **Interlock**  | Dual-layer hashes match: `SHA256(OP_RETURN) == witness.opr` **AND** `SHA256(witness_without_opr)[..8] == OP_RETURN.w`. |
 | 5  | **Identity**   | `pk` field in JSON must match the Taproot x-only public key that signed the transaction.                |
 | 6  | **Proof**      | Full node proof verification (blocks ≥ 941950): extract complete `TwoRoundProof` from on-chain data → pre-check heights count, time window, field lengths → verify `proof.combined == fnp` → Indexer independently recomputes both rounds using its own RPC block data → all hashes must match. Replay protection via used-proof table. For blocks < 941950: legacy validation (proof hash uniqueness only). |
@@ -615,7 +615,7 @@ A minter must fund their Taproot address with at least **10,000 sats**:
 
 | Component     | Amount        |
 | ------------- | ------------- |
-| Protocol fee  | 1,000 sats    |
+| Protocol fee  | 1,500 sats    |
 | Miner fee     | ~20-1000 sats (at 0.1–1 sat/vB) |
 | Dust output   | 330 sats      |
 | Change        | Remainder     |
@@ -981,7 +981,7 @@ No. The Indexer independently recomputes the full two-round proof from on-chain 
 The proof verifies that the minter has access to raw Bitcoin block data — the ability to read arbitrary historical blocks at the byte level. The Indexer independently recomputes every proof using its own full node, ensuring that no fabricated data can pass verification. The recommended and simplest way to mint is by running a local full archive node with the NEXUS Reactor.
 
 **Q: Is there a premine or team allocation?**
-No. Zero premine. The protocol fee address receives 1,000 sats per mint — that's it. All 21,000,000 NXS are distributed through fair minting.
+No. Zero premine. The protocol fee address receives 1,500 sats per mint — that's it. All 21,000,000 NXS are distributed through fair minting.
 
 **Q: What happens after all 42,000 mints are done?**
 Minting ends permanently. NXS can only be transferred, never created again.
