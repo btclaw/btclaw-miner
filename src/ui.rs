@@ -22,7 +22,7 @@ pub fn banner() {
     println!("  {D}  ──────────────────────────────────────────────────{R}");
     println!();
     println!("  {W}  Network   {D}Bitcoin L1       {D}│  {W}Supply  {G}21,000,000 NXS{R}");
-    println!("  {W}  Per Mint  {D}500 NXS          {D}│  {W}Fee     {Y}1,000 sats{R}");
+    println!("  {W}  Per Mint  {D}500 NXS          {D}│  {W}Fee     {Y}1,500 sats{R}");
     println!("  {W}  Security  {D}Full Node        {D}│  {W}Total   {Y}42,000 mints{R}");
     println!();
     println!("  {C}{B}════════════════════════════════════════════════════════════{R}");
