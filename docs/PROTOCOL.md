@@ -194,7 +194,7 @@ Content-Type: `application/nexus-deploy`
   "max": 21000000,
   "lim": 500,
   "total_mints": 42000,
-  "fee": 1000,
+  "fee": 1500,
   "pk": "d2275bb54312700c0a0453e43b7ffde2...",
   "opr": "38687f4a3ea51169ef8ab213..."
 }
@@ -215,7 +215,7 @@ Content-Type: `application/nexus-deploy`
 #### Deploy OP_RETURN Layer
 
 ```
-NXS:DEPLOY:NXS:max=21000000:lim=500:fee=1000
+NXS:DEPLOY:NXS:max=21000000:lim=500:fee=1500
 ```
 
 Human-readable ASCII string defining all protocol parameters.
