@@ -258,21 +258,6 @@ cargo build --release
 
 ---
 
-## 链上验证
-
-每笔 NEXUS 铸造都永久保存在区块浏览器上。完整的证明数据嵌入链上，任何拥有比特币全节点的人都能独立验证铸造者确实拥有原始区块数据的访问能力。
-
-**示例（Mint #8，区块 942512）：**
-
-| 字段 | 值 |
-|------|-----|
-| Reveal TX | `9e6dc6cd450163bda86aeda59fc1d8b01adda05e5b3183dc5bd5dacab819f80d` |
-| Commit TX | `32fcb9aaeb88cc8bd1aff0f143299027dd02cd69f061d1f7359b7b831637405e` |
-| 铸造者 | `bc1prh30dts9mn738hxz59v58z4cxutphrxfntfl8rxlh8fr2mhtc67sjy3t6z` |
-| OP\_RETURN | `NXS:MINT:500:w=592aa5cd2c86d856:p=9597d93d7cc4eb7b` |
-
----
-
 ## 常见问题
 
 **问：为什么必须运行全节点才能铸造？**
@@ -311,7 +296,6 @@ cargo build --release
 
 - **官网**：[bitcoinexus.xyz](https://bitcoinexus.xyz)
 - **GitHub**：[github.com/btcnexus/nexus-protocol](https://github.com/btcnexus/nexus-protocol)
-- **API**：[api.bitcoinexus.xyz/api/status](https://api.bitcoinexus.xyz/api/status)
 - **协议规范**：[`docs/PROTOCOL.md`](docs/PROTOCOL.md)
 - **协议文档**：[bitcoinexus.xyz/protocol](https://bitcoinexus.xyz/protocol)
 
