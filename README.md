@@ -62,7 +62,7 @@ Mint requires the Witness layer to embed the full node proof. Transfer only need
 │  └───────────────────────────────────────┘          │
 │                                                     │
 │  OUTPUT[0]: 330 sats → minter (token holder)        │
-│  OUTPUT[1]: 1,000 sats → protocol fee               │
+│  OUTPUT[1]: 1,500 sats → protocol fee               │
 │  OUTPUT[2]: OP_RETURN (protocol data)               │
 └─────────────────────────────────────────────────────┘
 ```
@@ -165,7 +165,7 @@ The Reactor also verifies your `blocks/` directory:
 | **Total Supply** | 21,000,000 |
 | **Per Mint** | 500 NXS (fixed) |
 | **Total Mints** | 42,000 |
-| **Mint Fee** | 1,000 sats per mint |
+| **Mint Fee** | 1,500 sats per mint |
 | **Min Fee Rate** | 0.1 sat/vB |
 | **Requirement** | BTC Full Archive Node + NEXUS Reactor |
 | **Fair Launch** | No premine. No team allocation. FCFS. |
@@ -229,7 +229,7 @@ Select `[6]` to create a new wallet. Choose Taproot (`bc1p...`, BIP86) for best 
 
 ### Step 3 — Fund Your Address
 
-Send at least **10,000 sats** to your Taproot address (1,000 fee + miner fee + dust).
+Send at least **10,000 sats** to your Taproot address (1,500 fee + miner fee + dust).
 
 ### Step 4 — Mint
 
@@ -247,7 +247,7 @@ Five-layer UTXO classification protects your assets:
 | 2 | Amount ≤ 546 sats | Locked — likely inscription/Rune |
 | 3 | In `nxs_locked.json` | Locked |
 | 4 | In `nxs_change.json` | Safe to spend |
-| 5 | Amount > 1,000 sats | Safe to spend |
+| 5 | Amount > 1,500 sats | Safe to spend |
 
 ---
 
