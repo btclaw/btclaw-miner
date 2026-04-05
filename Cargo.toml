@@ -9,10 +9,6 @@ default-run = "nexus-reactor"
 name = "nexus-reactor"
 path = "src/main.rs"
 
-[[bin]]
-name = "nexus-indexer"
-path = "src/bin/indexer.rs"
-
 [features]
 default = []
 regtest = []
@@ -26,7 +22,3 @@ reqwest = { version = "0.12", features = ["blocking", "json"] }
 bitcoin = { version = "0.32", features = ["rand-std"] }
 clap = { version = "4", features = ["derive"] }
 dirs = "5.0"
-actix-web = "4"
-actix-cors = "0.7"
-tokio = { version = "1", features = ["full"] }
-rusqlite = { version = "0.31", features = ["bundled"] }
