@@ -186,6 +186,27 @@ Reactor 还会验证你的 `blocks/` 目录：
 
 ### 构建和运行
 
+# 安装 Rust（如果尚未安装）
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+source $HOME/.cargo/env
+
+# 安装系统依赖
+sudo apt update
+sudo apt install -y build-essential pkg-config libssl-dev python3 python3-pip
+
+# 安装 Python 依赖
+pip install bip_utils base58 --break-system-packages -i https://pypi.org/simple/
+
+# 克隆项目
+git clone https://github.com/btcnexus/nexus-protocol.git
+cd nexus-protocol
+
+# 构建（主网）
+cargo build --release
+
+# 运行
+./target/release/nexus-reactor
+
 ```bash
 git clone https://github.com/btcnexus/nexus-protocol.git
 cd nexus-protocol
