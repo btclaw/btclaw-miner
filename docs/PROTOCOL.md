@@ -772,20 +772,20 @@ NXS:MINT:500:w=592aa5cd2c86d856:p=9597d93d7cc4eb7b
   "p": "nexus",
   "op": "mint",
   "amt": 500,
-  "pk": "b4906faaf2724a591af6ae26aed26c355e65f70565d4c3c0665eeebcbc58332d",
-  "fnp": "9597d93d7cc4eb7b5bb38faae2e68733bcb7e0eed4713ea9bd5db1c9d1201f97",
-  "opr": "d61158fca158210c239eea6ea0182c6229785bf892ce8635b0e6389c2d2dfbb3",
+  "pk": "b4906faaf2724a591af6ae26aed26c355e65f70...",
+  "fnp": "9597d93d7cc4eb7b5bb38faae2e68733bcb7e...",
+  "opr": "d61158fca158210c239eea6ea0182c6229785bf...",
   "proof": {
-    "round1_hash": "2cf1baef431dff570be52c58078025ab937a1163a4b57fe374b444d6ad593aad",
+    "round1_hash": "2cf1baef431dff570be52c5807802...",
     "round1_ts": 1774636799,
     "round1_heights": [698166, 228405, 783396, 450259, 474437, 310513, 126297, 20911, 454193, 438057],
-    "round2_hash": "33014a4c0fbdd0df6afb26241759df4abf76f4d98038761e8433dcb31901c45b",
+    "round2_hash": "33014a4c0fbdd0df6afb26241759df4...",
     "round2_ts": 1774636800,
     "round2_heights": [73488, 836059, 883435, 915542, 151845, 434755, 204560, 510522, 932028, 344689],
-    "combined": "9597d93d7cc4eb7b5bb38faae2e68733bcb7e0eed4713ea9bd5db1c9d1201f97",
-    "block_hash": "0000000000000000000a3224d322dc7748829b4348ec3bab601e0ebd85a728a",
+    "combined": "9597d93d7cc4eb7b5bb38faae2e68733bcb...",
+    "block_hash": "0000000000000000000a3224d322dc7748829b4348e...",
     "block_height": 942504,
-    "pubkey": "03b4906faaf2724a591af6ae26aed26c355e65f70565d4c3c0665eeebcbc58332d"
+    "pubkey": "03b4906faaf2724a591af6ae26aed26c355e65f7056..."
   }
 }
 ```
