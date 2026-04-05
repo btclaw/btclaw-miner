@@ -895,16 +895,10 @@ fn menu_create_wallet() {
 
     println!("  {c}{b}── Create Wallet / 创建钱包 ──{r}");
     println!();
-    println!("    {y}{b}[1]{r}  {w}Taproot (bc1p...){r}            {d}P2TR - BIP86 推荐{r}");
-    println!("    {y}{b}[2]{r}  {w}Native SegWit (bc1q...){r}      {d}P2WPKH - BIP84{r}");
-    println!("    {y}{b}[3]{r}  {w}Nested SegWit (3...){r}         {d}P2SH-P2WPKH - BIP49{r}");
-    println!("    {y}{b}[4]{r}  {w}All types / 全部生成{r}");
-    println!("    {d}[0]  Back 返回{r}");
+    println!("    {g}{b}NEXUS minting requires Taproot (bc1p) address{r}");
+    println!("    {d}铸造必须使用 Taproot 地址，自动生成 bc1p 地址{r}");
     println!();
-    print!("  {y}{b}> {r}");
-    io::stdout().flush().unwrap();
-    let choice = read_line().trim().to_string();
-    let addr_type = match choice.as_str() { "1" => "taproot", "2" => "native_segwit", "3" => "nested_segwit", "4" => "all", _ => return };
+    let addr_type = "taproot";
     println!();
     print!("  Wallet name / 钱包名称: ");
     io::stdout().flush().unwrap();
