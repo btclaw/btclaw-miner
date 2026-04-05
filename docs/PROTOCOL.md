@@ -231,10 +231,10 @@ Human-readable ASCII string defining all protocol parameters.
 
 | Transaction | TXID |
 | ----------- | ---- |
-| Commit TX   | `4ea9202d1d7988a3d4d9dafdc26e1713229563dddb0e7a5bcffcc81867089eef` |
-| Reveal TX   | `03b3690fc650ab69de5531e26f4e7b3b83a5ae4fdf0d3fd0a02fdaf9fee09567` |
-| Deployer    | `bc1pfnlwr3pg5rf52y76wd5e360wujh3fkx8mpwzr5gka794tzz4qtmq7u2zcc` |
-| Deployer PK | `d2275bb54312700c0a0453e43b7ffde25871d898097c03539128c2586...` |
+| Commit TX   | `203f9712c0b1d36654364f13c8eedea47be8c85bb36b29482739abf9d3225dd0` |
+| Reveal TX   | `b096151a6e12f91388f9da21cd3dbe1b40899086c33a0f43b495773dfdd3ea53` |
+| Deployer    | `bc1ptkcgd07jeraf7u0qa8gzcnmdpxrvtq2s27azkctl9ekpx0lk8masjrukpe` |
+| Deployer PK | `d077c6b93327505d63c639e2019151cf23698a60686292ccd0f317f39ec91b7e` |
 
 The Deploy transaction follows the same Commit + Reveal pattern as Mint (§3.6), but uses `application/nexus-deploy` as the inscription content type instead of `application/nexus-mint`.
 
