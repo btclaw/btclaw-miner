@@ -18,7 +18,7 @@ pub const MINT_AMOUNT: u64 = 500;
 pub const TOTAL_MINTS: u32 = 42_000;
 
 /// 铸造费 (satoshis)
-pub const MINT_FEE_SATS: u64 = 5_000;
+pub const MINT_FEE_SATS: u64 = 1_000;
 
 /// Reveal TX output[0] — 铸造产生的 token UTXO 面值 (satoshis)
 /// 铭文/协议资产的载体, 铸造后永久锁定不可花费
