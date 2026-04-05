@@ -227,18 +227,6 @@ Human-readable ASCII string defining all protocol parameters.
 | `[0]`    | 330 sats | Deployer's address               |
 | `[1]`    | 0 sats   | OP_RETURN (protocol parameters)  |
 
-#### On-Chain Reference
-
-| Transaction | TXID |
-| ----------- | ---- |
-| Commit TX   | `203f9712c0b1d36654364f13c8eedea47be8c85bb36b29482739abf9d3225dd0` |
-| Reveal TX   | `b096151a6e12f91388f9da21cd3dbe1b40899086c33a0f43b495773dfdd3ea53` |
-| Deployer    | `bc1ptkcgd07jeraf7u0qa8gzcnmdpxrvtq2s27azkctl9ekpx0lk8masjrukpe` |
-| Deployer PK | `d077c6b93327505d63c639e2019151cf23698a60686292ccd0f317f39ec91b7e` |
-
-The Deploy transaction follows the same Commit + Reveal pattern as Mint (§3.6), but uses `application/nexus-deploy` as the inscription content type instead of `application/nexus-mint`.
-
----
 
 ## 4. Full Node Proof
 
@@ -762,17 +750,6 @@ NXS:MINT:500:w=592aa5cd2c86d856:p=9597d93d7cc4eb7b
 
 Both layers cross-reference each other. The `pk` field binds the mint to the signing key. The `proof` object enables any full node operator to independently verify the minter had access to raw block data. Verifiable by anyone running a Bitcoin full node.
 
-#### On-Chain Reference (with proof)
-
-| Transaction | TXID |
-| ----------- | ---- |
-| Commit TX   | `32fcb9aaeb88cc8bd1aff0f143299027dd02cd69f061d1f7359b7b831637405e` |
-| Reveal TX   | `9e6dc6cd450163bda86aeda59fc1d8b01adda05e5b3183dc5bd5dacab819f80d` |
-| Block       | 942512 |
-| Minter      | `bc1prh30dts9mn738hxz59v58z4cxutphrxfntfl8rxlh8fr2mhtc67sjy3t6z` |
-| Mint #      | 8 |
-
----
 
 ## 16. Transfer Protocol
 
