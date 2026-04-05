@@ -291,21 +291,6 @@ Live at **[bitcoinexus.xyz](https://bitcoinexus.xyz)** — minting progress, hol
 
 ---
 
-## On-Chain Verification
-
-Every NEXUS mint is permanently visible on any block explorer. The complete proof data is embedded on-chain, enabling anyone with a Bitcoin full node to independently verify the minter had access to raw block data.
-
-**Example (Mint #8, Block 942512):**
-
-| Field | Value |
-|-------|-------|
-| Reveal TX | `9e6dc6cd450163bda86aeda59fc1d8b01adda05e5b3183dc5bd5dacab819f80d` |
-| Commit TX | `32fcb9aaeb88cc8bd1aff0f143299027dd02cd69f061d1f7359b7b831637405e` |
-| Minter | `bc1prh30dts9mn738hxz59v58z4cxutphrxfntfl8rxlh8fr2mhtc67sjy3t6z` |
-| OP\_RETURN | `NXS:MINT:500:w=592aa5cd2c86d856:p=9597d93d7cc4eb7b` |
-
----
-
 ## FAQ
 
 **Q: Why require a full node to mint?**
