@@ -39,7 +39,7 @@ NEXUS defines three on-chain operations, each using the appropriate data layer(s
 | **Total Supply** | 21,000,000                                     |
 | **Per Mint**     | 500 NXS (fixed)                                |
 | **Total Mints**  | 42,000                                         |
-| **Mint Fee**     | 5,000 sats per mint                            |
+| **Mint Fee**     | 1,000 sats per mint                            |
 | **Min Fee Rate** | 0.1 sat/vB                                     |
 | **Requirement**  | BTC Full Archive Node + NEXUS Reactor          |
 | **Fair Launch**  | No premine. No team allocation. FCFS.          |
@@ -91,20 +91,20 @@ Embedded in a Taproot inscription (Ordinals-compatible envelope), the Witness la
   "p": "nexus",
   "op": "mint",
   "amt": 500,
-  "pk": "b4906faaf2724a591af6ae26aed26c355e65f70565d4c3c0665eeebcbc58332d",
-  "fnp": "9597d93d7cc4eb7b5bb38faae2e68733bcb7e0eed4713ea9bd5db1c9d1201f97",
-  "opr": "d61158fca158210c239eea6ea0182c6229785bf892ce8635b0e6389c2d2dfbb3",
+  "pk": "b4906faaf2724a591af6ae26aed26c355e65f70...",
+  "fnp": "9597d93d7cc4eb7b5bb38faae2e68733bcb7e...",
+  "opr": "d61158fca158210c239eea6ea0182c6229785bf...",
   "proof": {
-    "round1_hash": "2cf1baef431dff570be52c58078025ab937a1163a4b57fe374b444d6ad593aad",
+    "round1_hash": "2cf1baef431dff570be52c5807802...",
     "round1_ts": 1774636799,
     "round1_heights": [698166, 228405, 783396, 450259, 474437, 310513, 126297, 20911, 454193, 438057],
-    "round2_hash": "33014a4c0fbdd0df6afb26241759df4abf76f4d98038761e8433dcb31901c45b",
+    "round2_hash": "33014a4c0fbdd0df6afb26241759df4...",
     "round2_ts": 1774636800,
     "round2_heights": [73488, 836059, 883435, 915542, 151845, 434755, 204560, 510522, 932028, 344689],
-    "combined": "9597d93d7cc4eb7b5bb38faae2e68733bcb7e0eed4713ea9bd5db1c9d1201f97",
-    "block_hash": "0000000000000000000a3224d322dc7748829b4348ec3bab601e0ebd85a728a",
+    "combined": "9597d93d7cc4eb7b5bb38faae2e68733bcb...",
+    "block_hash": "0000000000000000000a3224d322dc7748829b4348e...",
     "block_height": 942504,
-    "pubkey": "03b4906faaf2724a591af6ae26aed26c355e65f70565d4c3c0665eeebcbc58332d"
+    "pubkey": "03b4906faaf2724a591af6ae26aed26c355e65f7056..."
   }
 }
 ```
@@ -164,7 +164,7 @@ The `pk` field and the `proof` object both participate in the Witness hash, mean
 | Output   | Value       | Purpose                           |
 | -------- | ----------- | --------------------------------- |
 | `[0]`    | 330 sats    | Minter's token-holding UTXO       |
-| `[1]`    | 5,000 sats  | Protocol fee to designated address |
+| `[1]`    | 1,000 sats  | Protocol fee to designated address |
 | `[2]`    | 0 sats      | OP_RETURN data carrier             |
 
 Fee address: `bc1px3xlanjssfrj6p796vjew7u70qe26yv4d4lfdj292g8q7hmwt3ns3hrd02`
@@ -194,9 +194,9 @@ Content-Type: `application/nexus-deploy`
   "max": 21000000,
   "lim": 500,
   "total_mints": 42000,
-  "fee": 5000,
-  "pk": "d2275bb54312700c0a0453e43b7ffde25871d898097c03539128c258604259ed",
-  "opr": "38687f4a3ea51169ef8ab2139f3131d649b6bfb8c86761832..."
+  "fee": 1000,
+  "pk": "d2275bb54312700c0a0453e43b7ffde2...",
+  "opr": "38687f4a3ea51169ef8ab213..."
 }
 ```
 
@@ -231,10 +231,10 @@ Human-readable ASCII string defining all protocol parameters.
 
 | Transaction | TXID |
 | ----------- | ---- |
-| Commit TX   | `c72a693c52db9764d94167876ee5a9889b30f5e5cd183e9d03b96add5136f7fa` |
-| Reveal TX   | `450ae05b1e066a51a9fa3ce17b4781442eb90e367fcf5ba7e9753c7ecb465124` |
-| Deployer    | `bc1prup3j0l8p832kcxx02cvjj52s6etu20gvk0ppd4f5zsqed4kjawsfx800y` |
-| Deployer PK | `d2275bb54312700c0a0453e43b7ffde25871d898097c03539128c258604259ed` |
+| Commit TX   | `4ea9202d1d7988a3d4d9dafdc26e1713229563dddb0e7a5bcffcc81867089eef` |
+| Reveal TX   | `03b3690fc650ab69de5531e26f4e7b3b83a5ae4fdf0d3fd0a02fdaf9fee09567` |
+| Deployer    | `bc1pfnlwr3pg5rf52y76wd5e360wujh3fkx8mpwzr5gka794tzz4qtmq7u2zcc` |
+| Deployer PK | `d2275bb54312700c0a0453e43b7ffde25871d898097c03539128c2586...` |
 
 The Deploy transaction follows the same Commit + Reveal pattern as Mint (§3.6), but uses `application/nexus-deploy` as the inscription content type instead of `application/nexus-mint`.
 
