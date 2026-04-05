@@ -561,36 +561,6 @@ Mint sequence numbers are assigned by the Indexer based on **transaction positio
 
 Each full node proof is unique (derived from the minter's public key + block hash + random block data). The Indexer maintains a **used-proof table** to reject any proof that has been seen before. Batch mints produce distinct proofs because each uses a different block height (§4.7).
 
-### 8.6 HTTP API Service
-
-The Indexer runs as a standalone HTTP service (`src/bin/indexer.rs`) built with **actix-web**, with a response cache layer (RwLock) for high-concurrency performance and CORS enabled for cross-origin frontend access. All endpoints use the `/api` prefix, with legacy non-prefixed routes maintained for backward compatibility.
-
-#### Core Endpoints
-
-| Endpoint                       | Method | Description                                              |
-| ------------------------------ | ------ | -------------------------------------------------------- |
-| `GET /api/status`              | GET    | Protocol status: total supply, minted, holders, mint fee, mints remaining, scan height |
-| `GET /api/balance/{address}`   | GET    | Query NXS balance for a specific address                 |
-| `GET /api/mint/{seq}`          | GET    | Lookup a specific mint by sequence number                |
-| `GET /api/mints?page=1&limit=20` | GET | Paginated mint list (oldest first, max 100 per page)     |
-| `GET /api/holders`             | GET    | Holder ranking (top 100), sorted by balance descending. Returns `address`, `balance`, and `mint_count` per holder |
-| `GET /api/tx/{txid}`           | GET    | Lookup a specific mint by reveal transaction ID          |
-| `GET /api/health`              | GET    | Service health check: status, protocol name, version, scan height |
-
-#### Frontend Endpoints
-
-| Endpoint                          | Method | Description                                              |
-| --------------------------------- | ------ | -------------------------------------------------------- |
-| `GET /api/mints/recent`           | GET    | Recent mints (latest 20, newest first)                   |
-| `GET /api/mints/address/{address}`| GET    | All mints for a specific address, plus balance and mint_count |
-| `GET /api/mint/tx/{txid}`         | GET    | Lookup mint by reveal txid (frontend-compatible format)  |
-
-API endpoint: https://api.bitcoinexus.xyz
-
----
-
-## 9. Wallet
-
 ### 9.1 Wallet Generation
 
 The Reactor includes a built-in wallet generator (`scripts/wallet_gen.py` using `bip_utils`) that supports three address types:
