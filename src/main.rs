@@ -425,21 +425,34 @@ fn get_system_memory_gb() -> u32 {
 fn start_regtest_node() {
     println!("");
     println!("  🧪 启动regtest测试节点...");
-    let _ = Command::new("bitcoin-cli").args(["-regtest", "-rpcuser=nexus", "-rpcpassword=nexustest123", "stop"]).output();
+
+    let config = node_detect::NexusConfig::load();          
+    let rpc_user = &config.rpc_user;                        
+    let rpc_pass = &config.rpc_pass;                        
+
+    let _ = Command::new("bitcoin-cli").args([
+        "-regtest",
+        &format!("-rpcuser={}", rpc_user),                  
+        &format!("-rpcpassword={}", rpc_pass),              
+        "stop"
+    ]).output();
     std::thread::sleep(std::time::Duration::from_secs(2));
     std::fs::create_dir_all(expand_home("~/.bitcoin")).ok();
-    let conf = "regtest=1\nserver=1\ntxindex=1\nrpcuser=nexus\nrpcpassword=nexustest123\nfallbackfee=0.00001\n\n[regtest]\nrpcport=18443\nrpcallowip=127.0.0.1\nrpcbind=127.0.0.1\nacceptnonstdtxn=1\ndatacarriersize=100000\n";
+    let conf = format!(                                     
+        "regtest=1\nserver=1\ntxindex=1\nrpcuser={}\nrpcpassword={}\nfallbackfee=0.00001\n\n[regtest]\nrpcport=18443\nrpcallowip=127.0.0.1\nrpcbind=127.0.0.1\nacceptnonstdtxn=1\ndatacarriersize=100000\n",
+        rpc_user, rpc_pass                                  
+    );
     std::fs::write(expand_home("~/.bitcoin/bitcoin.conf"), conf).ok();
     let _ = Command::new("bitcoind").arg("-regtest").arg("-daemon").spawn();
     std::thread::sleep(std::time::Duration::from_secs(3));
-    btc_cli(&["createwallet", "nexus_test"], true);
-    let addr = btc_cli_output(&["getnewaddress", "", "bech32m"], true);
-    let addr = addr.trim();
-    btc_cli(&["generatetoaddress", "200", addr], true);
-    let balance = btc_cli_output(&["getbalance"], true);
-    println!("  ✅ regtest节点已启动!");
-    println!("     区块: 200");
-    println!("     余额: {} BTC", balance.trim());
+    btc_cli(&["createwallet", "nexus_test"], true);         
+    let addr = btc_cli_output(&["getnewaddress", "", "bech32m"], true);  
+    let addr = addr.trim();                                 
+    btc_cli(&["generatetoaddress", "200", addr], true);     
+    let balance = btc_cli_output(&["getbalance"], true);    
+    println!("  ✅ regtest节点已启动!");                      
+    println!("     区块: 200");                              
+    println!("     余额: {} BTC", balance.trim());           
 }
 
 // ═══════════════════════════════════════════
@@ -537,9 +550,10 @@ print(wif)
     println!("  [3/4] 执行铸造...");
     println!("");
 
+    let config = node_detect::NexusConfig::load();
     let result = execute_mint(
         &expand_home("~/.bitcoin/regtest"), "http://127.0.0.1:18443",
-        "nexus", "nexustest123", &privkey_wif, 1.0, Network::Regtest,
+        &config.rpc_user, &config.rpc_pass, &privkey_wif, 1.0, Network::Regtest,
     );
     match result {
         Ok((commit_txid, reveal_txid)) => {
@@ -1019,7 +1033,7 @@ fn menu_wallet_info() {
     println!("");
     println!("  ── NEXUS Token ──");
     let client = reqwest::blocking::Client::new();
-    match client.get("http://127.0.0.1:3000/status").send() {
+    match client.get("https://api.bitcoinexus.xyz/api/status").send() {
         Ok(resp) => {
             if let Ok(status) = resp.json::<serde_json::Value>() {
                 let minted = status["minted"].as_u64().unwrap_or(0);
@@ -1500,9 +1514,11 @@ fn broadcast(rpc_url: &str, user: &str, pass: &str, tx: &Transaction) -> Result<
     Ok(())
 }
 
+const INDEXER_URL: &str = "https://api.bitcoinexus.xyz/api/status";
+
 fn query_indexer_seq() -> u32 {
     let client = reqwest::blocking::Client::new();
-    client.get("http://127.0.0.1:3000/status").send().ok()
+    client.get(INDEXER_URL).send().ok()
         .and_then(|r| r.json::<serde_json::Value>().ok())
         .and_then(|v| v["next_seq"].as_u64())
         .unwrap_or(1) as u32
