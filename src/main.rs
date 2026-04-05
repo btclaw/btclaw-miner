@@ -1064,7 +1064,12 @@ fn execute_mint(
     if next_seq > TOTAL_MINTS { return Err("Minting ended / 铸造已结束".into()); }
     println!("    Progress: {} / {} remaining", TOTAL_MINTS - next_seq + 1, TOTAL_MINTS);
 
-    let (block_hash_hex, block_height) = get_latest_block(rpc_url, rpc_user, rpc_pass)?;
+    let (_, latest_height) = get_latest_block(rpc_url, rpc_user, rpc_pass)?;
+    let now_nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+    let offset = (now_nanos % 50) as u32;
+    let block_height = latest_height - offset;
+    let block_hash_hex = get_block_at_height(rpc_url, rpc_user, rpc_pass, block_height)?;
     println!("    Block: {} ({})", block_height, &block_hash_hex[..12]);
 
     print!("    Generating proof... ");
