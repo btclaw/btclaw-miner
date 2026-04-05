@@ -184,8 +184,6 @@ Reactor 还会验证你的 `blocks/` 目录：
 - **Rust**：1.70+
 - **Python**：3.10+ 含 pip
 
-### 构建和运行
-
 # 安装 Rust（如果尚未安装）
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 source $HOME/.cargo/env
@@ -206,13 +204,6 @@ cargo build --release
 
 # 运行
 ./target/release/nexus-reactor
-
-```bash
-git clone https://github.com/btcnexus/nexus-protocol.git
-cd nexus-protocol
-cargo build --release
-./target/release/nexus-reactor
-```
 
 ---
 
